@@ -39,11 +39,6 @@ EMAIL_DESTINO_SOPORTE = 'DESTINO@ejemplo.com'
 # Configuración de la página y título.
 st.set_page_config(page_title="Tickets de soporte", page_icon="🎫")
 st.title("🎫 Tickets de soporte")
-st.write(
-    """
-    Esta aplicación muestra cómo puedes construir una herramienta interna en Streamlit. Aquí implementamos un flujo de trabajo para tickets de soporte. El usuario puede crear un ticket, editar tickets existentes y ver algunas estadísticas.
-    """
-)
 
 # Funciones para la base de datos
 def obtener_tickets_db():

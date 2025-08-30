@@ -80,14 +80,25 @@ if "df" not in st.session_state:
     df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
     st.session_state.df = df
 
-# Selección de rol al inicio
-rol = st.sidebar.selectbox(
-    "Selecciona tu rol",
-    ["Usuario", "Soporte"],
-    help="Elige si eres usuario final o personal de soporte"
+# --- LOGIN PARA ADMIN Y SOPORTE ---
+def autenticar_usuario(usuario, password):
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('SELECT nombre, password, rol FROM usuarios WHERE nombre=?', (usuario,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[1] == password:
+        return row[2]  # rol: 'admin', 'soporte', etc
+    return None
+
+st.sidebar.title("Acceso")
+modo_elegido = st.sidebar.radio(
+    "Tipo de acceso:",
+    ("Usuario", "Interno (Soporte/Admin)"),
+    help="Elige si eres usuario final o personal de soporte/administracion"
 )
 
-if rol == "Usuario":
+if modo_elegido == "Usuario":
     st.header("Enviar un ticket de soporte")
     with st.form("add_ticket_form"):
         usuario = st.text_input("Usuario", placeholder="Nombre y Apellido")
@@ -152,27 +163,64 @@ if rol == "Usuario":
         rows = obtener_tickets_db()
         st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
 
-elif rol == "Soporte":
-    # Autenticación simple para soporte
-    if "auth_soporte" not in st.session_state:
-        st.session_state.auth_soporte = False
-    if not st.session_state.auth_soporte:
-        st.header("Acceso restringido para soporte")
-        with st.form("login_soporte"):
+elif modo_elegido == "Interno (Soporte/Admin)":
+    if "auth_interno" not in st.session_state:
+        st.session_state.auth_interno = False
+    if "rol_usuario" not in st.session_state:
+        st.session_state.rol_usuario = None
+    if "nombre_usuario" not in st.session_state:
+        st.session_state.nombre_usuario = None
+    if not st.session_state.auth_interno:
+        st.header("Acceso restringido para soporte/admin")
+        with st.form("login_interno"):
             user = st.text_input("Usuario")
             pwd = st.text_input("Contraseña", type="password")
             login = st.form_submit_button("Iniciar sesión")
         if login:
-            if user == "soporte" and pwd == "1234":
-                st.session_state.auth_soporte = True
-                st.success("Acceso concedido. Bienvenido, soporte.")
+            rol_usuario = autenticar_usuario(user, pwd)
+            if rol_usuario in ["soporte", "admin"]:
+                st.session_state.auth_interno = True
+                st.session_state.rol_usuario = rol_usuario
+                st.session_state.nombre_usuario = user
+                st.success(f"Acceso concedido. Bienvenido, {rol_usuario}.")
                 st.rerun()
             else:
-                st.error("Usuario o contraseña incorrectos.")
+                st.error("Usuario o contraseña incorrectos, o rol no autorizado.")
         st.stop()
 
-    st.header("Gestión de tickets de soporte")
-    st.write(f"Número de tickets: `{len(st.session_state.df)}`")
+    rol_usuario = st.session_state.rol_usuario
+    nombre_usuario = st.session_state.nombre_usuario
+
+    def obtener_soportes():
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        c.execute('SELECT nombre FROM usuarios WHERE rol = "soporte" ORDER BY nombre ASC')
+        soportes = c.fetchall()
+        conn.close()
+        return soportes
+
+    soportes_lista = obtener_soportes()
+    opciones_soporte = [s[0] for s in soportes_lista]
+
+    # --- CARGA MAPEO DE USUARIOS ---
+    def obtener_mapeo_username_nombre():
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        c.execute('SELECT nombre FROM usuarios')
+        mapeo = c.fetchall()
+        conn.close()
+        return mapeo
+    mapeo_user_nombre = obtener_mapeo_username_nombre()
+
+    if rol_usuario == "soporte":
+        st.header("Gestión de tickets de soporte")
+        # Solo mostrar tickets asignados al soporte logueado (nombre exacto)
+        tabla_tickets = st.session_state.df[st.session_state.df["asignado"] == nombre_usuario].copy()
+    else:
+        st.header("Gestión de tickets (admin)")
+        tabla_tickets = st.session_state.df.copy()
+
+    st.write(f"Número de tickets: `{len(tabla_tickets)}`")
     st.info(
         "Puedes editar los tickets haciendo doble clic en una celda. Los reportes se actualizan automáticamente.",
         icon="✍️",
@@ -181,17 +229,24 @@ elif rol == "Soporte":
     # Filtros avanzados
     with st.expander("🔎 Filtros avanzados", expanded=False):
         colf1, colf2, colf3 = st.columns(3)
+        base_filtro = tabla_tickets if rol_usuario == "soporte" else st.session_state.df
         with colf1:
-            estado_filtro = st.multiselect("Estado", options=st.session_state.df["Status"].unique().tolist(), default=st.session_state.df["Status"].unique().tolist())
-            prioridad_filtro = st.multiselect("Prioridad", options=st.session_state.df["Priority"].unique().tolist(), default=st.session_state.df["Priority"].unique().tolist())
+            estado_filtro = st.multiselect("Estado", options=base_filtro["Status"].unique().tolist(), default=base_filtro["Status"].unique().tolist())
+            prioridad_filtro = st.multiselect("Prioridad", options=base_filtro["Priority"].unique().tolist(), default=base_filtro["Priority"].unique().tolist())
         with colf2:
-            usuario_filtro = st.multiselect("Usuario", options=st.session_state.df["usuario"].unique().tolist(), default=st.session_state.df["usuario"].unique().tolist())
-            sede_filtro = st.multiselect("Sede", options=st.session_state.df["sede"].unique().tolist(), default=st.session_state.df["sede"].unique().tolist())
+            usuario_filtro = st.multiselect("Usuario", options=base_filtro["usuario"].unique().tolist(), default=base_filtro["usuario"].unique().tolist())
+            sede_filtro = st.multiselect("Sede", options=base_filtro["sede"].unique().tolist(), default=base_filtro["sede"].unique().tolist())
         with colf3:
-            tipo_filtro = st.multiselect("Tipo", options=st.session_state.df["tipo"].unique().tolist(), default=st.session_state.df["tipo"].unique().tolist())
+            tipo_filtro = st.multiselect("Tipo", options=base_filtro["tipo"].unique().tolist(), default=base_filtro["tipo"].unique().tolist())
             fechas = st.date_input("Rango de fechas", [])
 
-    df_filtrado = st.session_state.df[
+    df_filtrado = tabla_tickets[
+        tabla_tickets["Status"].isin(estado_filtro)
+        & tabla_tickets["Priority"].isin(prioridad_filtro)
+        & tabla_tickets["usuario"].isin(usuario_filtro)
+        & tabla_tickets["sede"].isin(sede_filtro)
+        & tabla_tickets["tipo"].isin(tipo_filtro)
+    ] if rol_usuario == "soporte" else st.session_state.df[
         st.session_state.df["Status"].isin(estado_filtro)
         & st.session_state.df["Priority"].isin(prioridad_filtro)
         & st.session_state.df["usuario"].isin(usuario_filtro)
@@ -213,7 +268,18 @@ elif rol == "Soporte":
             st.warning("Formato de fecha inválido en los datos.")
 
     # Mostrar y editar tickets con AgGrid (solo resumen)
-    resumen_cols = ["ID", "Issue", "Status", "Priority", "Date Submitted"]
+    if rol_usuario == "admin":
+        resumen_cols = ["ID", "Issue", "Status", "Priority", "Date Submitted", "asignado"]
+    else:
+        resumen_cols = ["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"]
+
+    # Botón de cerrar sesión para soporte/admin 
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Cerrar sesión"):
+        st.session_state.auth_interno = False
+        st.session_state.rol_usuario = None
+        st.session_state.nombre_usuario = None
+        st.rerun()
     df_resumen = df_filtrado[resumen_cols].copy()
     gb = GridOptionsBuilder.from_dataframe(df_resumen)
     gb.configure_selection('single', use_checkbox=False)
@@ -221,6 +287,8 @@ elif rol == "Soporte":
     gb.configure_column("Priority", editable=True, cellEditor='agSelectCellEditor', cellEditorParams={"values": ["Alta", "Media", "Baja"]})
     gb.configure_column("ID", editable=False)
     gb.configure_column("Date Submitted", editable=False)
+    if rol_usuario == "admin":
+        gb.configure_column("asignado", editable=True, cellEditor='agSelectCellEditor', cellEditorParams={"values": opciones_soporte})
     grid_options = gb.build()
     grid_response = AgGrid(
         df_resumen,
@@ -237,11 +305,11 @@ elif rol == "Soporte":
     for idx, row in grid_response["data"].iterrows() if hasattr(grid_response["data"], 'iterrows') else enumerate(grid_response["data"]):
         if isinstance(row, dict):
             ticket_id = row["ID"]
-            for col in ["Status", "Priority"]:
+            for col in ["Status", "Priority", "asignado"]:
                 edited_df.loc[edited_df["ID"] == ticket_id, col] = row[col]
         else:
             ticket_id = row["ID"]
-            for col in ["Status", "Priority"]:
+            for col in ["Status", "Priority", "asignado"]:
                 edited_df.loc[edited_df["ID"] == ticket_id, col] = row[col]
     selected_ticket_id = None
     if grid_response["selected_rows"] is not None and len(grid_response["selected_rows"]) > 0:
@@ -278,7 +346,6 @@ elif rol == "Soporte":
         ticket_detalle = df_filtrado[df_filtrado["ID"] == selected_ticket_id]
         if not ticket_detalle.empty:
             st.markdown("#### Detalle del ticket seleccionado")
-            st.json(ticket_detalle.iloc[0].to_dict())
 
         def obtener_historial(ticket_id):
             conn = sqlite3.connect('helpdesk.db')
@@ -372,24 +439,26 @@ elif rol == "Soporte":
             st.experimental_rerun()
 
         with st.form("form_comentario"):
-            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
+            usuario_hist = st.text(nombre_usuario)
             comentario = st.text_area("Agregar comentario o acción al historial")
             enviar_com = st.form_submit_button("Agregar comentario")
         if enviar_com and comentario.strip():
             agregar_comentario(selected_ticket_id, usuario_hist, comentario.strip())
             st.success("Comentario agregado.")
-            st.experimental_rerun()
+            st.rerun()
 
     # Guardar cambios en la base de datos si hay edición
     if not edited_df.equals(df_filtrado):
-        # Detectar cambios de estado y notificar
+        # Recorrer las filas y detectar cambios en Status o asignado
         for idx, row in edited_df.iterrows():
             ticket_id = row['ID']
             nuevo_estado = row['Status']
-            # Buscar el estado anterior
-            estado_anterior = st.session_state.df.loc[st.session_state.df['ID'] == ticket_id, 'Status'].values[0]
+            nuevo_asignado = row['asignado'] if 'asignado' in row else None
+            df_actual = st.session_state.df.loc[st.session_state.df['ID'] == ticket_id]
+            estado_anterior = df_actual['Status'].values[0] if not df_actual.empty else None
+            asignado_anterior = df_actual['asignado'].values[0] if not df_actual.empty else None
+            # Cuando cambia el estado del ticket
             if nuevo_estado != estado_anterior:
-                # Notificar a soporte
                 try:
                     send_email_gmail(
                         subject=f"Ticket {ticket_id} actualizado",
@@ -399,7 +468,7 @@ elif rol == "Soporte":
                 except Exception as e:
                     st.warning(f"No se pudo enviar el email de notificación a soporte: {e}")
                 # Notificar al usuario si su campo parece un email
-                usuario_email = row['usuario']
+                usuario_email = row['usuario'] if 'usuario' in row else None
                 if isinstance(usuario_email, str) and '@' in usuario_email:
                     try:
                         send_email_gmail(
@@ -409,6 +478,10 @@ elif rol == "Soporte":
                         )
                     except Exception as e:
                         st.warning(f"No se pudo enviar el email al usuario: {e}")
+            # Cuando cambia el responsable asignado
+            if nuevo_asignado != asignado_anterior:
+                # Aquí puedes enviar un email o agregar lógica si se requiere, ejemplo para auditar:
+                pass  # Si quieres notificar aquí, agrega la lógica
         actualizar_tickets_db(edited_df)
         # Actualizar solo los tickets filtrados en la sesión
         st.session_state.df.update(edited_df)
@@ -446,3 +519,110 @@ elif rol == "Soporte":
     )
     st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
 
+    if rol_usuario == "admin":
+        # --- Exportación de la base de datos para admin ---
+        with st.expander("📥 Exportar base de datos completa (solo admin)", expanded=False):
+            import shutil
+            import io
+            st.markdown("**Exportar base de datos en diferentes formatos**")
+            col_db, col_sql, col_sqlsrv = st.columns(3)
+            # .db
+            with col_db:
+                with open("helpdesk.db", "rb") as f:
+                    st.download_button(
+                        label="Descargar .db",
+                        data=f,
+                        file_name="helpdesk.db",
+                        mime="application/x-sqlite3"
+                    )
+            # .sql (dump SQLite)
+            with col_sql:
+                import sqlite3
+                with io.StringIO() as string_buf:
+                    conn = sqlite3.connect("helpdesk.db")
+                    for line in conn.iterdump():
+                        string_buf.write(f"{line}\n")
+                    conn.close()
+                    sql_dump = string_buf.getvalue().encode("utf-8")
+                st.download_button(
+                    label="Descargar .sql (SQLite)",
+                    data=sql_dump,
+                    file_name="helpdesk_dump.sql",
+                    mime="text/sql"
+                )
+            # .sql para SQL Server (conversion simple)
+            with col_sqlsrv:
+                import re
+                def convertir_a_sqlserver(sqlite_sql):
+                    # conversion básica: tipos de datos principales
+                    texto = sqlite_sql
+                    texto = re.sub(r'\bINTEGER PRIMARY KEY AUTOINCREMENT\b', 'INT IDENTITY(1,1) PRIMARY KEY', texto)
+                    texto = re.sub(r'\bINTEGER PRIMARY KEY\b', 'INT PRIMARY KEY', texto)
+                    texto = re.sub(r'\bTEXT\b', 'NVARCHAR(MAX)', texto)
+                    texto = re.sub(r'\bREAL\b', 'FLOAT', texto)
+                    texto = re.sub(r'\bBLOB\b', 'VARBINARY(MAX)', texto)
+                    texto = re.sub(r'\bDATETIME\b', 'DATETIME', texto)
+                    texto = re.sub(r'\bBOOLEAN\b', 'BIT', texto)
+                    texto = re.sub(r'\bAUTOINCREMENT\b', 'IDENTITY(1,1)', texto)
+                    # Elimina PRAGMA y secuencia de versionado
+                    texto = re.sub(r'^PRAGMA.*', '', texto, flags=re.MULTILINE)
+                    texto = re.sub(r'^BEGIN TRANSACTION;', '', texto, flags=re.MULTILINE)
+                    texto = re.sub(r'^COMMIT;', '', texto, flags=re.MULTILINE)
+                    # Quitar triggers, que no son compatibles directamente
+                    texto = re.sub(r'CREATE TRIGGER.*?END;', '', texto, flags=re.DOTALL | re.IGNORECASE)
+                    # Otras adapataciones puedes agregar aquí
+                    return texto
+                conn = sqlite3.connect("helpdesk.db")
+                sql_buffer = io.StringIO()
+                for line in conn.iterdump():
+                    sql_buffer.write(f"{line}\n")
+                conn.close()
+                converted = convertir_a_sqlserver(sql_buffer.getvalue())
+                st.download_button(
+                    label="Descargar .sql (SQL Server)",
+                    data=converted.encode("utf-8"),
+                    file_name="helpdesk_sqlserver.sql",
+                    mime="text/sql"
+                )
+
+        # --- EJECUTAR SQL ARBITRARIO ---
+        with st.expander("🔧 Ejecutar instrucciones SQL (avanzado, admin)", expanded=False):
+            st.markdown(":red[Ten mucho cuidado. Puedes leer, modificar o destruir datos si ejecutas sentencias peligrosas.]")
+            user_sql = st.text_area("Escribe tu sentencia SQL (SELECT, UPDATE, etc.)", "SELECT name FROM sqlite_master WHERE type='table';")
+            if st.button("Ejecutar SQL"):
+                import sqlite3
+                try:
+                    conn = sqlite3.connect("helpdesk.db")
+                    c = conn.cursor()
+                    c.execute(user_sql)
+                    if user_sql.strip().lower().startswith("select"):
+                        resultado = c.fetchall()
+                        columns = [d[0] for d in c.description] if c.description else []
+                        if resultado:
+                            st.dataframe(pd.DataFrame(resultado, columns=columns), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("Consulta ejecutada. Sin resultados.")
+                    else:
+                        conn.commit()
+                        st.success("Sentencia ejecutada exitosamente.")
+                    conn.close()
+                except Exception as e:
+                    st.error(f"Error ejecutando sentencia SQL: {e}")
+
+        # --- ESTRUCTURA DE LA BASE DE DATOS ---
+        with st.expander("📂 Ver estructura de la base de datos", expanded=False):
+            import sqlite3
+            conn = sqlite3.connect("helpdesk.db")
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
+            tablas = [t[0] for t in c.fetchall()]
+            for tabla in tablas:
+                st.markdown(f"### Tabla: `{tabla}`")
+                c.execute(f"PRAGMA table_info('{tabla}')")
+                columns = c.fetchall()
+                if columns:
+                    df_cols = pd.DataFrame(columns, columns=["cid", "name", "type", "notnull", "default_value", "pk"])
+                    st.dataframe(df_cols[["name", "type", "notnull", "default_value", "pk"]], use_container_width=True, hide_index=True)
+                else:
+                    st.write("Sin información de columnas para esta tabla.")
+            conn.close()

@@ -284,111 +284,14 @@ elif rol == "Soporte":
     # Mostrar detalles si se selecciona un ticket
     if result and result.get("clicked_deal"):
         st.info(f"Ticket seleccionado: {result['clicked_deal']['deal_id']}")
-        st.json(result["clicked_deal"])
-
-    # Filtros avanzados
-    with st.expander("🔎 Filtros avanzados", expanded=False):
-        colf1, colf2, colf3 = st.columns(3)
-        with colf1:
-            estado_filtro = st.multiselect("Estado", options=st.session_state.df["Status"].unique().tolist(), default=st.session_state.df["Status"].unique().tolist())
-            prioridad_filtro = st.multiselect("Prioridad", options=st.session_state.df["Priority"].unique().tolist(), default=st.session_state.df["Priority"].unique().tolist())
-        with colf2:
-            usuario_filtro = st.multiselect("Usuario", options=st.session_state.df["usuario"].unique().tolist(), default=st.session_state.df["usuario"].unique().tolist())
-            sede_filtro = st.multiselect("Sede", options=st.session_state.df["sede"].unique().tolist(), default=st.session_state.df["sede"].unique().tolist())
-        with colf3:
-            tipo_filtro = st.multiselect("Tipo", options=st.session_state.df["tipo"].unique().tolist(), default=st.session_state.df["tipo"].unique().tolist())
-            fechas = st.date_input("Rango de fechas", [])
-
-    df_filtrado = st.session_state.df[
-        st.session_state.df["Status"].isin(estado_filtro)
-        & st.session_state.df["Priority"].isin(prioridad_filtro)
-        & st.session_state.df["usuario"].isin(usuario_filtro)
-        & st.session_state.df["sede"].isin(sede_filtro)
-        & st.session_state.df["tipo"].isin(tipo_filtro)
-    ]
-    # Filtrado por rango de fechas si se selecciona
-    if fechas and len(fechas) == 2:
-        try:
-            fecha_inicio = fechas[0].strftime("%d-%m-%Y")
-            fecha_fin = fechas[1].strftime("%d-%m-%Y")
-            df_filtrado = df_filtrado[
-                pd.to_datetime(df_filtrado["Date Submitted"], format="%d-%m-%Y") >= pd.to_datetime(fecha_inicio, format="%d-%m-%Y")
-            ]
-            df_filtrado = df_filtrado[
-                pd.to_datetime(df_filtrado["Date Submitted"], format="%d-%m-%Y") <= pd.to_datetime(fecha_fin, format="%d-%m-%Y")
-            ]
-        except Exception:
-            st.warning("Formato de fecha inválido en los datos.")
-
-    # Mostrar y editar tickets con AgGrid (solo resumen)
-    resumen_cols = ["ID", "Issue", "Status", "Priority", "Date Submitted", "sede"]
-    df_resumen = df_filtrado[resumen_cols].copy()
-    gb = GridOptionsBuilder.from_dataframe(df_resumen)
-    gb.configure_selection('single', use_checkbox=False)
-    gb.configure_column("Status", editable=True, cellEditor='agSelectCellEditor', cellEditorParams={"values": ["Abierto", "En progreso", "Cerrado"]})
-    gb.configure_column("Priority", editable=True, cellEditor='agSelectCellEditor', cellEditorParams={"values": ["Alta", "Media", "Baja"]})
-    gb.configure_column("ID", editable=False)
-    gb.configure_column("Date Submitted", editable=False)
-    grid_options = gb.build()
-    grid_response = AgGrid(
-        df_resumen,
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.MODEL_CHANGED | GridUpdateMode.SELECTION_CHANGED,
-        allow_unsafe_jscode=True,
-        enable_enterprise_modules=False,
-        fit_columns_on_grid_load=True,
-        height=350,
-        key="aggrid_tickets"
-    )
-    # Reflejar ediciones en el DataFrame original
-    edited_df = df_filtrado.copy()
-    for idx, row in grid_response["data"].iterrows() if hasattr(grid_response["data"], 'iterrows') else enumerate(grid_response["data"]):
-        if isinstance(row, dict):
-            ticket_id = row["ID"]
-            for col in ["Status", "Priority"]:
-                edited_df.loc[edited_df["ID"] == ticket_id, col] = row[col]
-        else:
-            ticket_id = row["ID"]
-            for col in ["Status", "Priority"]:
-                edited_df.loc[edited_df["ID"] == ticket_id, col] = row[col]
-    selected_ticket_id = None
-    if grid_response["selected_rows"] is not None and len(grid_response["selected_rows"]) > 0:
-        sel = grid_response["selected_rows"]
-        if isinstance(sel, list):
-            selected_ticket_id = sel[0]["ID"]
-        else:
-            selected_ticket_id = sel.iloc[0]["ID"]
-    # Exportar tickets filtrados
-    import io
-    st.markdown("### Exportar tickets filtrados")
-    col_exp1, col_exp2 = st.columns(2)
-    with col_exp1:
-        csv = df_filtrado.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Descargar CSV",
-            data=csv,
-            file_name="tickets_filtrados.csv",
-            mime="text/csv"
-        )
-    with col_exp2:
-        output = io.BytesIO()
-        df_filtrado.to_excel(output, index=False, engine='xlsxwriter')
-        st.download_button(
-            label="Descargar Excel",
-            data=output.getvalue(),
-            file_name="tickets_filtrados.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    # Mostrar detalle, historial, comentarios y adjuntos justo debajo de la tabla si hay ticket seleccionado en AgGrid
-    if selected_ticket_id:
-        # Mostrar detalle del ticket
-        ticket_detalle = df_filtrado[df_filtrado["ID"] == selected_ticket_id]
-        if not ticket_detalle.empty:
-            st.markdown("#### Detalle del ticket seleccionado")
-            st.json(ticket_detalle.iloc[0].to_dict())
-
-        def obtener_historial(ticket_id):
+        with st.expander("Detalles del ticket"):
+            st.write("🆔 ID:", result["clicked_deal"]["id"])
+            st.write("🏢 Sede:", result["clicked_deal"]["company_name"])
+            st.write("📦 Tipo de producto:", result["clicked_deal"]["product_type"])
+            st.write("📅 Fecha:", result["clicked_deal"]["date"])
+            st.write("👤 Usuario:", result["clicked_deal"]["underwriter"])
+            st.write("⚠️ Prioridad:", result["clicked_deal"]["currency"])
+    def obtener_historial(ticket_id):
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
             c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
@@ -396,7 +299,7 @@ elif rol == "Soporte":
             conn.close()
             return rows
 
-        def agregar_comentario(ticket_id, usuario, comentario):
+    def agregar_comentario(ticket_id, usuario, comentario):
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
             fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
@@ -404,122 +307,147 @@ elif rol == "Soporte":
             conn.commit()
             conn.close()
 
-        st.markdown("---")
-        st.subheader(f"Historial, comentarios y adjuntos del ticket {selected_ticket_id}")
-        historial = obtener_historial(selected_ticket_id)
+    st.markdown("---")
+    if result.get("clicked_deal"):
+        st.subheader(f"Historial, comentarios y adjuntos del ticket {result['clicked_deal']['deal_id']}")
+        historial = obtener_historial(result['clicked_deal']['deal_id'])
         import os
         from urllib.parse import unquote
         if historial:
-            for h in historial:
-                fecha, usuario_hist, comentario = h
-                # Detectar si es un adjunto en base de datos
-                if comentario.startswith("[Archivo adjunto BD](") and comentario.endswith(")"):
-                    nombre_archivo = comentario[len("[Archivo adjunto BD]("): -1]
-                    nombre_archivo = unquote(nombre_archivo)
-                    # Recuperar adjunto de la base de datos
-                    conn = sqlite3.connect('helpdesk.db')
-                    c = conn.cursor()
-                    c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (selected_ticket_id, nombre_archivo))
-                    adj = c.fetchone()
-                    conn.close()
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
-                    if adj:
-                        tipo_mime, contenido = adj
+            adjuntos_mostrados = set()
+            adjuntos_disco_mostrados = set()
+            with st.expander("🗨️ Historial de comentarios"):
+                for h in historial:
+                    fecha, usuario_hist, comentario = h
+                    # Detectar si es un adjunto en base de datos
+                    if comentario.startswith("[Archivo adjunto BD](") and comentario.endswith(")"):
+                        nombre_archivo = comentario[len("[Archivo adjunto BD]("): -1]
+                        nombre_archivo = unquote(nombre_archivo)
+                        if nombre_archivo in adjuntos_mostrados:
+                            continue
+                        adjuntos_mostrados.add(nombre_archivo)
+                        # Recuperar adjunto de la base de datos
+                        conn = sqlite3.connect('helpdesk.db')
+                        c = conn.cursor()
+                        c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (result['clicked_deal']['deal_id'], nombre_archivo))
+                        adj = c.fetchone()
+                        conn.close()
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
+                        if adj:
+                            tipo_mime, contenido = adj
+                            ext = os.path.splitext(nombre_archivo)[1].lower()
+                            if tipo_mime and tipo_mime.startswith("image"):
+                                import io
+                                st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
+                            elif tipo_mime and tipo_mime.startswith("video"):
+                                import io
+                                st.video(io.BytesIO(contenido))
+                            else:
+                                st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                        else:
+                            st.warning(f"Archivo adjunto no encontrado en la base de datos: {nombre_archivo}")
+                    # Detectar si es un adjunto en disco (legacy)
+                    elif comentario.startswith("[Archivo adjunto](") and comentario.endswith(")"):
+                        ruta = comentario[len("[Archivo adjunto]("): -1]
+                        ruta = unquote(ruta)
+                        nombre_archivo = os.path.basename(ruta)
+                        if nombre_archivo in adjuntos_disco_mostrados:
+                            continue
+                        adjuntos_disco_mostrados.add(nombre_archivo)
                         ext = os.path.splitext(nombre_archivo)[1].lower()
-                        if tipo_mime and tipo_mime.startswith("image"):
-                            import io
-                            st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
-                        elif tipo_mime and tipo_mime.startswith("video"):
-                            import io
-                            st.video(io.BytesIO(contenido))
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
+                        if os.path.exists(ruta):
+                            if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
+                                st.image(ruta, caption=nombre_archivo, use_container_width=True)
+                            elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
+                                st.video(ruta)
+                            else:
+                                with open(ruta, "rb") as f:
+                                    st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
                         else:
-                            st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                            st.warning(f"Archivo adjunto no encontrado: {nombre_archivo}")
                     else:
-                        st.warning(f"Archivo adjunto no encontrado en la base de datos: {nombre_archivo}")
-                # Detectar si es un adjunto en disco (legacy)
-                elif comentario.startswith("[Archivo adjunto](") and comentario.endswith(")"):
-                    ruta = comentario[len("[Archivo adjunto]("): -1]
-                    ruta = unquote(ruta)
-                    nombre_archivo = os.path.basename(ruta)
-                    ext = os.path.splitext(nombre_archivo)[1].lower()
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
-                    if os.path.exists(ruta):
-                        if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
-                            st.image(ruta, caption=nombre_archivo, use_container_width=True)
-                        elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
-                            st.video(ruta)
-                        else:
-                            with open(ruta, "rb") as f:
-                                st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
-                    else:
-                        st.warning(f"Archivo adjunto no encontrado: {nombre_archivo}")
-                else:
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: {comentario}")
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: {comentario}")
         else:
-            st.write("Sin comentarios ni historial aún.")
-        # Adjuntar archivos en base de datos
+            st.info("Este ticket no tiene historial aún.")
+        with st.form(f"form_comentario_{result['clicked_deal']['deal_id']}"):
+            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
+            comentario = st.text_area("Agregar comentario o acción al historial")
+            enviar_com = st.form_submit_button("Agregar comentario")
+
+        if enviar_com and comentario.strip():
+            agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
+            st.success("Comentario agregado.")
+            st.rerun()
+
+        # 🔽 Mostrar el uploader de archivo después del formulario
         st.markdown("**Adjuntar archivo al ticket**")
-        archivo = st.file_uploader("Selecciona un archivo para adjuntar", type=None, key=f"file_{selected_ticket_id}")
-        if archivo is not None:
+        archivo = st.file_uploader(
+            "Selecciona un archivo para adjuntar",
+            type=None,
+            key=f"file_{result['clicked_deal']['deal_id']}"
+        )
+
+        flag_key = f'adjunto_procesado_{result["clicked_deal"]["deal_id"]}'
+        if archivo is not None and not st.session_state.get(flag_key, False):
             import mimetypes
             nombre_archivo = archivo.name
             tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo.type or "application/octet-stream"
             contenido = archivo.getbuffer().tobytes()
             fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-            usuario_adj = "Soporte"
-            # Guardar en base de datos
+            usuario_adj = "Admin"
+            # Guardar en base de datos SOLO si NO EXISTE
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
-            c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)',
-                      (selected_ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
-            conn.commit()
+            c.execute('SELECT COUNT(*) FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ?', (result['clicked_deal']['deal_id'], nombre_archivo))
+            exists = c.fetchone()[0]
+            if not exists:
+                c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)',
+                        (result['clicked_deal']['deal_id'], nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
+                conn.commit()
+                # Registrar en historial
+                agregar_comentario(result['clicked_deal']['deal_id'], usuario_adj, f"[Archivo adjunto BD]({nombre_archivo})")
+                st.success(f"Archivo '{archivo.name}' adjuntado.")
+            else:
+                st.info(f"El archivo '{archivo.name}' ya fue adjuntado a este ticket.")
             conn.close()
-            # Registrar en historial
-            agregar_comentario(selected_ticket_id, usuario_adj, f"[Archivo adjunto BD]({nombre_archivo})")
-            st.success(f"Archivo '{archivo.name}' adjuntado.")
-            st.experimental_rerun()
-
-        with st.form("form_comentario"):
-            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
-            comentario = st.text_area("Agregar comentario o acción al historial")
-            enviar_com = st.form_submit_button("Agregar comentario")
-        if enviar_com and comentario.strip():
-            agregar_comentario(selected_ticket_id, usuario_hist, comentario.strip())
-            st.success("Comentario agregado.")
-            st.experimental_rerun()
-
+            st.session_state[flag_key] = True
+            st.rerun()
+        elif archivo is None:
+            st.session_state[f'adjunto_procesado_{result["clicked_deal"]["deal_id"]}'] = False
     # Guardar cambios en la base de datos si hay edición
-    if not edited_df.equals(df_filtrado):
-        # Detectar cambios de estado y notificar
-        for idx, row in edited_df.iterrows():
-            ticket_id = row['ID']
-            nuevo_estado = row['Status']
-            # Buscar el estado anterior
-            estado_anterior = st.session_state.df.loc[st.session_state.df['ID'] == ticket_id, 'Status'].values[0]
-            if nuevo_estado != estado_anterior:
-                # Notificar a soporte
-                try:
-                    send_email_gmail(
-                        subject=f"Ticket {ticket_id} actualizado",
-                        body=f"El estado del ticket {ticket_id} ha cambiado de '{estado_anterior}' a '{nuevo_estado}'.",
-                        to_email=EMAIL_DESTINO_SOPORTE
-                    )
-                except Exception as e:
-                    st.warning(f"No se pudo enviar el email de notificación a soporte: {e}")
-                # Notificar al usuario si su campo parece un email
-                usuario_email = row['usuario']
-                if isinstance(usuario_email, str) and '@' in usuario_email:
-                    try:
-                        send_email_gmail(
-                            subject=f"Actualización de su ticket {ticket_id}",
-                            body=f"Su ticket {ticket_id} ha cambiado de estado: {estado_anterior} → {nuevo_estado}.",
-                            to_email=usuario_email
-                        )
-                    except Exception as e:
-                        st.warning(f"No se pudo enviar el email al usuario: {e}")
-        actualizar_tickets_db(edited_df)
-        # Actualizar solo los tickets filtrados en la sesión
-        st.session_state.df.update(edited_df)
+    
+    # if not edited_df.equals(df_filtrado):
+    #     # Detectar cambios de estado y notificar
+    #     for idx, row in edited_df.iterrows():
+    #         ticket_id = row['ID']
+    #         nuevo_estado = row['Status']
+    #         # Buscar el estado anterior
+    #         estado_anterior = st.session_state.df.loc[st.session_state.df['ID'] == ticket_id, 'Status'].values[0]
+    #         if nuevo_estado != estado_anterior:
+    #             # Notificar a soporte
+    #             try:
+    #                 send_email_gmail(
+    #                     subject=f"Ticket {ticket_id} actualizado",
+    #                     body=f"El estado del ticket {ticket_id} ha cambiado de '{estado_anterior}' a '{nuevo_estado}'.",
+    #                     to_email=EMAIL_DESTINO_SOPORTE
+    #                 )
+    #             except Exception as e:
+    #                 st.warning(f"No se pudo enviar el email de notificación a soporte: {e}")
+    #             # Notificar al usuario si su campo parece un email
+    #             usuario_email = row['usuario']
+    #             if isinstance(usuario_email, str) and '@' in usuario_email:
+    #                 try:
+    #                     send_email_gmail(
+    #                         subject=f"Actualización de su ticket {ticket_id}",
+    #                         body=f"Su ticket {ticket_id} ha cambiado de estado: {estado_anterior} → {nuevo_estado}.",
+    #                         to_email=usuario_email
+    #                     )
+    #                 except Exception as e:
+    #                     st.warning(f"No se pudo enviar el email al usuario: {e}")
+    #     actualizar_tickets_db(edited_df)
+    #     # Actualizar solo los tickets filtrados en la sesión
+    #     st.session_state.df.update(edited_df)
     st.header("Estadísticas")
     col1, col2, col3 = st.columns(3)
     num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Abierto"])
@@ -529,7 +457,7 @@ elif rol == "Soporte":
     st.write("")
     st.write("##### Tickets por estado y mes")
     status_plot = (
-        alt.Chart(edited_df)
+        alt.Chart(df)
         .mark_bar()
         .encode(
             x="month(Date Submitted):O",
@@ -544,7 +472,7 @@ elif rol == "Soporte":
     st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
     st.write("##### Prioridades actuales de tickets")
     priority_plot = (
-        alt.Chart(edited_df)
+        alt.Chart(df)
         .mark_arc()
         .encode(theta="count():Q", color="Priority:N")
         .properties(height=300)
@@ -608,10 +536,13 @@ elif rol == "Admin":
     <div>
         <p>{row['Issue']}</p>
     </div>
-    <div>
-        <p style='color:{get_priority_color(row["Priority"])}'>
+    <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
+        <p style='color:{get_priority_color(row["Priority"])}; margin:0; padding:0;'>
             Prioridad: {row["Priority"]}
         </p>
+        <span style="background:#e0e0e0;border-radius:4px;padding:2px 6px;font-size:12px;margin-left:10px;">
+            👤 {row["asignado"] if row["asignado"] else "No asignado"}
+        </span>
     </div>
 """
         }
@@ -620,19 +551,19 @@ elif rol == "Admin":
     st.markdown("### Tickets Kanban")
 
     user_info = {
-    "role": "riskManager",
-    "email": "risk@company.com",
-    "permissions": ["risk_approval", "management_approval"],
-    "approval_limits": {"VV": {"EUR": 100000}, "OF": {"EUR": 150000}},
-    "department": "Risk Management",
-    "is_active": True
-}
+        "role": "riskManager",
+        "email": "risk@company.com",
+        "permissions": ["risk_approval", "management_approval"],
+        "approval_limits": {"VV": {"EUR": 100000}, "OF": {"EUR": 150000}},
+        "department": "Risk Management",
+        "is_active": True
+    }
     result = kanban_board(
-    stages=stages,
-    deals=deals,
-    user_info=user_info,
-    key="kanban_tickets"
-)
+        stages=stages,
+        deals=deals,
+        user_info=user_info,
+        key="kanban_tickets"
+    )
 
     # Procesar cambios de estado
     if result and result.get("moved_deal"):
@@ -647,9 +578,69 @@ elif rol == "Admin":
         # Recargar los tickets desde la base de datos para reflejar el cambio
         rows = obtener_tickets_db()
         st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
+
     # Mostrar detalles si se selecciona un ticket
     if result and result.get("clicked_deal"):
-        st.info(f"Ticket seleccionado: {result['clicked_deal']['deal_id']}")
+    # Columna izquierda: info, centro: selección de usuario, derecha: prioridad
+        cols = st.columns([2, 2.2, 2])
+        with cols[0]:
+            st.info(f"🆔 Ticket seleccionado: {result['clicked_deal']['id']}")
+        with cols[1]:
+            # --------- Selección y asignación de usuario ---------
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('SELECT nombre FROM usuarios')
+            usuarios = [u[0] for u in c.fetchall()]
+            conn.close()
+            ticket_id = result["clicked_deal"]["id"]
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute("SELECT asignado FROM tickets WHERE id = ?", (ticket_id,))
+            asignado_actual = c.fetchone()
+            asignado_actual = asignado_actual[0]
+            conn.close()
+            nuevo_usuario = st.selectbox(
+                "Asignar usuario", options=[""]+usuarios, index=(usuarios.index(asignado_actual) + 1) if asignado_actual in usuarios else 0, key=f"asignar_{ticket_id}", placeholder=asignado_actual)
+            if nuevo_usuario != asignado_actual:
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute("UPDATE tickets SET asignado = ? WHERE id = ?", (nuevo_usuario, ticket_id))
+                conn.commit()
+                conn.close()
+                st.success(f"Usuario asignado: {nuevo_usuario if nuevo_usuario else 'Ninguno'}")
+                rows = obtener_tickets_db()
+                st.session_state.df = pd.DataFrame(
+                    rows,
+                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"]
+                )
+                st.rerun()
+        with cols[2]:
+            # --------- Selección y cambio de prioridad ---------
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute("SELECT priority FROM tickets WHERE id = ?", (ticket_id,))
+            prioridad_actual = c.fetchone()[0]
+            conn.close()
+            prioridades = ["Alta", "Media", "Baja"]
+            nueva_prioridad = st.selectbox(
+                "Cambiar prioridad",
+                options=prioridades,
+                index=prioridades.index(prioridad_actual) if prioridad_actual in prioridades else 1,
+                key=f"cambiar_prioridad_{ticket_id}"
+            )
+            if nueva_prioridad != prioridad_actual:
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute("UPDATE tickets SET priority = ? WHERE id = ?", (nueva_prioridad, ticket_id))
+                conn.commit()
+                conn.close()
+                st.success(f"Prioridad cambiada a: {nueva_prioridad}")
+                rows = obtener_tickets_db()
+                st.session_state.df = pd.DataFrame(
+                    rows,
+                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"]
+                )
+                st.rerun()
         with st.expander("Detalles del ticket"):
             st.write("🆔 ID:", result["clicked_deal"]["id"])
             st.write("🏢 Sede:", result["clicked_deal"]["company_name"])
@@ -674,85 +665,144 @@ elif rol == "Admin":
             conn.close()
 
     st.markdown("---")
-    st.subheader(f"Historial, comentarios y adjuntos del ticket {result['clicked_deal']['deal_id']}")
-    historial = obtener_historial(result['clicked_deal']['deal_id'])
-    import os
-    from urllib.parse import unquote
-    if historial:
-            for h in historial:
-                fecha, usuario_hist, comentario = h
-                # Detectar si es un adjunto en base de datos
-                if comentario.startswith("[Archivo adjunto BD](") and comentario.endswith(")"):
-                    nombre_archivo = comentario[len("[Archivo adjunto BD]("): -1]
-                    nombre_archivo = unquote(nombre_archivo)
-                    # Recuperar adjunto de la base de datos
-                    conn = sqlite3.connect('helpdesk.db')
-                    c = conn.cursor()
-                    c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (selected_ticket_id, nombre_archivo))
-                    adj = c.fetchone()
-                    conn.close()
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
-                    if adj:
-                        tipo_mime, contenido = adj
+    if result.get("clicked_deal"):
+        st.subheader(f"Historial, comentarios y adjuntos del ticket {result['clicked_deal']['deal_id']}")
+        historial = obtener_historial(result['clicked_deal']['deal_id'])
+        import os
+        from urllib.parse import unquote
+        if historial:
+            adjuntos_mostrados = set()
+            adjuntos_disco_mostrados = set()
+            with st.expander("🗨️ Historial de comentarios"):
+                for h in historial:
+                    fecha, usuario_hist, comentario = h
+                    # Detectar si es un adjunto en base de datos
+                    if comentario.startswith("[Archivo adjunto BD](") and comentario.endswith(")"):
+                        nombre_archivo = comentario[len("[Archivo adjunto BD]("): -1]
+                        nombre_archivo = unquote(nombre_archivo)
+                        if nombre_archivo in adjuntos_mostrados:
+                            continue
+                        adjuntos_mostrados.add(nombre_archivo)
+                        # Recuperar adjunto de la base de datos
+                        conn = sqlite3.connect('helpdesk.db')
+                        c = conn.cursor()
+                        c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (result['clicked_deal']['deal_id'], nombre_archivo))
+                        adj = c.fetchone()
+                        conn.close()
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
+                        if adj:
+                            tipo_mime, contenido = adj
+                            ext = os.path.splitext(nombre_archivo)[1].lower()
+                            if tipo_mime and tipo_mime.startswith("image"):
+                                import io
+                                st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
+                            elif tipo_mime and tipo_mime.startswith("video"):
+                                import io
+                                st.video(io.BytesIO(contenido))
+                            else:
+                                st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                        else:
+                            st.warning(f"Archivo adjunto no encontrado en la base de datos: {nombre_archivo}")
+                    # Detectar si es un adjunto en disco (legacy)
+                    elif comentario.startswith("[Archivo adjunto](") and comentario.endswith(")"):
+                        ruta = comentario[len("[Archivo adjunto]("): -1]
+                        ruta = unquote(ruta)
+                        nombre_archivo = os.path.basename(ruta)
+                        if nombre_archivo in adjuntos_disco_mostrados:
+                            continue
+                        adjuntos_disco_mostrados.add(nombre_archivo)
                         ext = os.path.splitext(nombre_archivo)[1].lower()
-                        if tipo_mime and tipo_mime.startswith("image"):
-                            import io
-                            st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
-                        elif tipo_mime and tipo_mime.startswith("video"):
-                            import io
-                            st.video(io.BytesIO(contenido))
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
+                        if os.path.exists(ruta):
+                            if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
+                                st.image(ruta, caption=nombre_archivo, use_container_width=True)
+                            elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
+                                st.video(ruta)
+                            else:
+                                with open(ruta, "rb") as f:
+                                    st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
                         else:
-                            st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                            st.warning(f"Archivo adjunto no encontrado: {nombre_archivo}")
                     else:
-                        st.warning(f"Archivo adjunto no encontrado en la base de datos: {nombre_archivo}")
-                # Detectar si es un adjunto en disco (legacy)
-                elif comentario.startswith("[Archivo adjunto](") and comentario.endswith(")"):
-                    ruta = comentario[len("[Archivo adjunto]("): -1]
-                    ruta = unquote(ruta)
-                    nombre_archivo = os.path.basename(ruta)
-                    ext = os.path.splitext(nombre_archivo)[1].lower()
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
-                    if os.path.exists(ruta):
-                        if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
-                            st.image(ruta, caption=nombre_archivo, use_container_width=True)
-                        elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
-                            st.video(ruta)
-                        else:
-                            with open(ruta, "rb") as f:
-                                st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
-                    else:
-                        st.warning(f"Archivo adjunto no encontrado: {nombre_archivo}")
-                else:
-                    st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: {comentario}")
-    else:
-        st.write("Sin comentarios ni historial aún.")
-        # Adjuntar archivos en base de datos
+                        st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: {comentario}")
+        else:
+            st.info("Este ticket no tiene historial aún.")
+        # 🔽 Formulario único para agregar comentario
+        with st.form(f"form_comentario_{result['clicked_deal']['deal_id']}"):
+            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
+            comentario = st.text_area("Agregar comentario o acción al historial")
+            enviar_com = st.form_submit_button("Agregar comentario")
+
+        if enviar_com and comentario.strip():
+            agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
+            st.success("Comentario agregado.")
+            st.rerun()
+
+        # 🔽 Mostrar el uploader de archivo después del formulario
         st.markdown("**Adjuntar archivo al ticket**")
-        archivo = st.file_uploader("Selecciona un archivo para adjuntar", type=None, key=f"file_{result['clicked_deal']['deal_id']}")
-        if archivo is not None:
+        archivo = st.file_uploader(
+            "Selecciona un archivo para adjuntar",
+            type=None,
+            key=f"file_{result['clicked_deal']['deal_id']}"
+        )
+
+        flag_key = f'adjunto_procesado_{result["clicked_deal"]["deal_id"]}'
+        if archivo is not None and not st.session_state.get(flag_key, False):
             import mimetypes
             nombre_archivo = archivo.name
             tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo.type or "application/octet-stream"
             contenido = archivo.getbuffer().tobytes()
             fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-            usuario_adj = "Soporte"
-            # Guardar en base de datos
+            usuario_adj = "Admin"
+            # Guardar en base de datos SOLO si NO EXISTE
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
-            c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)',
-                      (selected_ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
-            conn.commit()
+            c.execute('SELECT COUNT(*) FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ?', (result['clicked_deal']['deal_id'], nombre_archivo))
+            exists = c.fetchone()[0]
+            if not exists:
+                c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)',
+                        (result['clicked_deal']['deal_id'], nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
+                conn.commit()
+                # Registrar en historial
+                agregar_comentario(result['clicked_deal']['deal_id'], usuario_adj, f"[Archivo adjunto BD]({nombre_archivo})")
+                st.success(f"Archivo '{archivo.name}' adjuntado.")
+            else:
+                st.info(f"El archivo '{archivo.name}' ya fue adjuntado a este ticket.")
             conn.close()
-            # Registrar en historial
-            agregar_comentario(selected_ticket_id, usuario_adj, f"[Archivo adjunto BD]({nombre_archivo})")
-            st.success(f"Archivo '{archivo.name}' adjuntado.")
-            st.experimental_rerun()
-
-        with st.form("form_comentario"):
-            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
-            comentario = st.text_area("Agregar comentario o acción al historial")
-            enviar_com = st.form_submit_button("Agregar comentario")
-        if enviar_com and comentario.strip():
-            agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
-            st.success("Comentario agregado.")
+            st.session_state[flag_key] = True
             st.rerun()
+        elif archivo is None:
+            st.session_state[f'adjunto_procesado_{result["clicked_deal"]["deal_id"]}'] = False
+    st.header("Estadísticas")
+    col1, col2, col3 = st.columns(3)
+    num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Abierto"])
+    col1.metric(label="Tickets abiertos", value=num_open_tickets, delta=10)
+    col2.metric(label="Tiempo primera respuesta (horas)", value=5.2, delta=-1.5)
+    col3.metric(label="Tiempo promedio de resolución (horas)", value=16, delta=2)
+    st.write("")
+    st.write("##### Tickets por estado y mes")
+    status_plot = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x="month(Date Submitted):O",
+            y="count():Q",
+            xOffset="Status:N",
+            color="Status:N",
+        )
+        .configure_legend(
+            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
+        )
+    )
+    st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
+    st.write("##### Prioridades actuales de tickets")
+    priority_plot = (
+        alt.Chart(df)
+        .mark_arc()
+        .encode(theta="count():Q", color="Priority:N")
+        .properties(height=300)
+        .configure_legend(
+            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
+        )
+    )
+    st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")

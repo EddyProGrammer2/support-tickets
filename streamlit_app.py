@@ -2,7 +2,7 @@ import datetime
 import random
 import sqlite3
 import logging
-
+import time
 import altair as alt
 import streamlit.components.v1 as components
 from streamlit_kanban import kanban
@@ -23,18 +23,27 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-def obtener_credenciales(credenciales):
+def obtener_credenciales():
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
-    c.execute('SELECT username, password from usuarios')
+    c.execute('SELECT username, password, rol from usuarios')
     credenciales = c.fetchall()
     conn.close()
     return credenciales
 
+# funcion para tener correo de los usarios en base de datos
+def obtener_correos_usuarios(nombre_usuario):
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('SELECT email FROM usuarios WHERE nombre = ?', (nombre_usuario,))
+    correos = c.fetchone()
+    conn.close()
+    return correos[0] if correos else None
+
 def send_email_gmail(subject, body, to_email):
     # Configura estos datos con tu cuenta de Gmail y contraseña de aplicación
     gmail_user = 'eddy.aluminiologo@gmail.com'
-    gmail_password = 'TU_CONTRASEÑA_DE_APLICACION'
+    gmail_password = 'iovu vemy ycra nzbx'
     from_email = gmail_user
     msg = MIMEMultipart()
     msg['From'] = from_email
@@ -51,8 +60,7 @@ def send_email_gmail(subject, body, to_email):
     except Exception as e:
         print(f"Error enviando email: {e}")
 
-# Configura aquí el correo de destino del soporte
-EMAIL_DESTINO_SOPORTE = 'DESTINO@ejemplo.com'
+EMAIL_DESTINO_SOPORTE = 'digitalizaciones.alu@gmail.com'
 
 # Configuración de la página y título.
 st.set_page_config(page_title="Tickets de soporte", page_icon="🎫")
@@ -62,7 +70,7 @@ st.title("🎫 Tickets de soporte")
 def obtener_tickets_db():
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
-    c.execute('SELECT id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado FROM tickets ORDER BY id DESC')
+    c.execute('SELECT id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email FROM tickets ORDER BY id DESC')
     rows = c.fetchall()
     conn.close()
     return rows
@@ -78,10 +86,10 @@ def agregar_ticket_db(issue, priority, usuario, sede, tipo):
         last_num = 1000
     new_id = f"TICKET-{last_num+1}"
     today = datetime.datetime.now().strftime("%d-%m-%Y")
-    c.execute('INSERT INTO tickets (id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (new_id, issue, "Abierto", priority, today, usuario, sede, tipo, ""))
+    c.execute('INSERT INTO tickets (id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (new_id, issue, "Abierto", priority, today, usuario, sede, tipo, "", email))
     conn.commit()
     conn.close()
-    return new_id, issue, "Abierto", priority, today, usuario, sede, tipo, ""
+    return new_id, issue, "Abierto", priority, today, usuario, sede, tipo, "", email
 
 def actualizar_tickets_db(df):
     conn = sqlite3.connect('helpdesk.db')
@@ -108,7 +116,7 @@ def actualizar_estado_ticket(ticket_id, nuevo_estado):
 # Crear un dataframe de Pandas con tickets existentes aleatorios.
 if "df" not in st.session_state:
     rows = obtener_tickets_db()
-    df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
+    df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     st.session_state.df = df
 
 # Selección de rol al inicio
@@ -141,7 +149,8 @@ if rol == "Usuario":
                 "Date Submitted": new_ticket[4],
                 "usuario": new_ticket[5],
                 "sede": new_ticket[6],
-                "tipo": new_ticket[7]
+                "tipo": new_ticket[7],
+                "email": new_ticket[9],
             }
         ])
         st.write("¡Ticket enviado! Detalles:")
@@ -190,6 +199,7 @@ elif rol == "Soporte":
     # Autenticación simple para soporte
     if "auth_soporte" not in st.session_state:
         st.session_state.auth_soporte = False
+        st.session_state.user = None
     if not st.session_state.auth_soporte:
         st.header("Acceso restringido para soporte")
         with st.form("login_soporte"):
@@ -197,15 +207,28 @@ elif rol == "Soporte":
             pwd = st.text_input("Contraseña", type="password")
             login = st.form_submit_button("Iniciar sesión")
         if login:
-            if user == "soporte" and pwd == "1234":
-                st.session_state.auth_soporte = True
-                st.success("Acceso concedido. Bienvenido, soporte.")
-                st.rerun()
+            for user_bd, pwd_bd, rol_bd in obtener_credenciales():
+                if user == user_bd and pwd == pwd_bd and rol_bd != "admin":
+                    st.session_state.auth_soporte = True
+                    st.session_state.user = user_bd
+                    st.success(f"Acceso concedido. Bienvenido, {user_bd}.")
+                    time.sleep(1)
+                    st.rerun()
+                if user == user_bd and pwd == pwd_bd and rol_bd == "admin":
+                    st.warning("Los usuarios administradores no tienen acceso al soporte.")
             else:
                 st.error("Usuario o contraseña incorrectos.")
         st.stop()
-
+    st.info(f"Sesion de Usuario: {st.session_state.user}")
+    usuario_actual = st.session_state.user
     st.header("Gestión de tickets de soporte")
+    # boton de cerrar sesion
+    if st.sidebar.button("Cerrar sesión"):
+        st.session_state.auth_soporte = False
+        st.session_state.user = None
+        st.success("Cerrando sesión... Hasta luego.")
+        time.sleep(1)
+        st.rerun()
     import pandas as pd
     from streamlit_kanban_board_goviceversa import kanban_board
     # Definir los estados para el tablero Kanban
@@ -225,6 +248,8 @@ elif rol == "Soporte":
         {"id": "Cerrado", "name": "Cerrado", "color": "#55FF55"}
     ]
     df = st.session_state.df.copy()
+    df_filtrado = df[df["asignado"] == usuario_actual]
+    df_filtrado = df_filtrado[df_filtrado["tipo"] != "archivado"]  # No mostrar archivados en Kanban
     # Adaptar los tickets al formato del kanban_board
     deals = [
         {
@@ -239,16 +264,19 @@ elif rol == "Soporte":
             "source": "VV",
             "custom_html": f"""
     <div>
-        <p>{row['Issue']}</p>
+        <p style='color: black;'>{row['Issue']}</p>
     </div>
     <div>
         <p style='color:{get_priority_color(row["Priority"])}'>
             Prioridad: {row["Priority"]}
         </p>
+        <span style="background:#e0e0e0;border-radius:4px;padding:2px 6px;font-size:12px;margin-left:10px; color: black">
+        💻 {row["asignado"] if row["asignado"] == st.session_state.user else "No asignado"}
+        </span>
     </div>
 """
         }
-        for _, row in df.iterrows()
+        for _, row in df_filtrado.iterrows()
     ]
     st.markdown("### Tickets Kanban")
 
@@ -450,14 +478,14 @@ elif rol == "Soporte":
     #     st.session_state.df.update(edited_df)
     st.header("Estadísticas")
     col1, col2, col3 = st.columns(3)
-    num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Abierto"])
+    num_open_tickets = len(df_filtrado[df_filtrado.Status == "Abierto"])
     col1.metric(label="Tickets abiertos", value=num_open_tickets, delta=10)
     col2.metric(label="Tiempo primera respuesta (horas)", value=5.2, delta=-1.5)
     col3.metric(label="Tiempo promedio de resolución (horas)", value=16, delta=2)
     st.write("")
     st.write("##### Tickets por estado y mes")
     status_plot = (
-        alt.Chart(df)
+        alt.Chart(df_filtrado)
         .mark_bar()
         .encode(
             x="month(Date Submitted):O",
@@ -472,7 +500,7 @@ elif rol == "Soporte":
     st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
     st.write("##### Prioridades actuales de tickets")
     priority_plot = (
-        alt.Chart(df)
+        alt.Chart(df_filtrado)
         .mark_arc()
         .encode(theta="count():Q", color="Priority:N")
         .properties(height=300)
@@ -481,6 +509,7 @@ elif rol == "Soporte":
         )
     )
     st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+
 
 elif rol == "Admin":
     if "auth_admin" not in st.session_state:
@@ -492,16 +521,26 @@ elif rol == "Admin":
             pwd = st.text_input("Contraseña", type="password")
             login = st.form_submit_button("Iniciar sesión")
         if login:
-            if user == 'admin' and pwd == '1234':
-                st.session_state.auth_admin = True
-                st.success("Acceso concedido. Bienvenido, Admin.")
-                st.rerun()
+            for user_bd, pwd_bd, rol_bd in obtener_credenciales():
+                if user == user_bd and pwd == pwd_bd and rol_bd == "admin":
+                    st.session_state.auth_admin = True
+                    st.session_state.user = user_bd
+                    st.success("Acceso concedido. Bienvenido, Admin.")
+                    st.rerun()
+                if user == user_bd and pwd == pwd_bd and rol_bd != "admin":
+                    st.warning("Solo los usuarios administradores tienen acceso")
             else:
                 st.error("Usuario o contraseña incorrectos.")
         st.stop()
 
     if st.session_state.auth_admin:
         st.header("Bienvenido, Admin")
+        # boton de cerrar sesion
+        if st.sidebar.button("Cerrar sesión"):
+            st.session_state.auth_admin = False
+            st.success("Cerrando sesión... Hasta luego.")
+            time.sleep(1)
+            st.rerun()
         import pandas as pd
         from streamlit_kanban_board_goviceversa import kanban_board
         def get_priority_color(priority):
@@ -520,7 +559,7 @@ elif rol == "Admin":
             {"id": "Cerrado", "name": "Cerrado", "color": "#55FF55"}
         ]
         df = st.session_state.df.copy()
-        
+        df = df[df["tipo"] != "archivado"]  # No mostrar archivados en Kanban
 
     deals = [
         {
@@ -531,18 +570,23 @@ elif rol == "Admin":
             "product_type": row["Issue"] or "",
             "date": row["Date Submitted"],
             "underwriter": row["usuario"] or "",
+            "source": "OF",
             "currency": row["Priority"],
+            "email": row["email"],
             "custom_html": f"""
     <div>
-        <p>{row['Issue']}</p>
+        <p style='color: black;'>{row['Issue']}</p>
     </div>
-    <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
+    <div style='display: flex; flex-direction: row; align-items: center; justify-content: space-between;'>
         <p style='color:{get_priority_color(row["Priority"])}; margin:0; padding:0;'>
             Prioridad: {row["Priority"]}
         </p>
-        <span style="background:#e0e0e0;border-radius:4px;padding:2px 6px;font-size:12px;margin-left:10px;">
-            👤 {row["asignado"] if row["asignado"] else "No asignado"}
+        <span style='background:#e0e0e0;border-radius:4px;padding:2px 6px;font-size:12px;margin-left:10px; color: black'>
+            💻 {row["asignado"] if row["asignado"] else "No asignado"}
         </span>
+    </div>
+    <div>
+        <p style='color: black; font-size: 12px; background-color: lightgray; border-radius: 15px; text-align: center;'>Email: {row['email']}</p>
     </div>
 """
         }
@@ -568,16 +612,32 @@ elif rol == "Admin":
     # Procesar cambios de estado
     if result and result.get("moved_deal"):
         moved_id = result["moved_deal"]["deal_id"]
+        # Buscar el deal original
+        moved_deal_full = next((d for d in deals if d["deal_id"] == moved_id), None)
+        if moved_deal_full:
+            email_moved = moved_deal_full.get("email", "No disponible")
+            username = moved_deal_full.get("underwriter", "Usuario")
+        else:
+            st.warning("No se encontró el ticket movido en la lista de deals.")
         nuevo_estado = result["moved_deal"]["to_stage"]
         conn = sqlite3.connect('helpdesk.db')
         c = conn.cursor()
         c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
         conn.commit()
         conn.close()
-        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
+        st.success(f"Ticket {moved_id} con email {email_moved} movido a estado '{nuevo_estado}'")
         # Recargar los tickets desde la base de datos para reflejar el cambio
         rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
+        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+        try:
+            send_email_gmail(
+                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
+                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
+                to_email={email_moved})
+            logger.info(f"Email de notificación enviado para ticket {moved_id}")
+            st.success(f"✅ Email enviado correctamente a {email_moved}")
+        except Exception as e:
+            st.warning(f"No se pudo enviar el email de notificación: {e}")
 
     # Mostrar detalles si se selecciona un ticket
     if result and result.get("clicked_deal"):
@@ -602,6 +662,7 @@ elif rol == "Admin":
             nuevo_usuario = st.selectbox(
                 "Asignar usuario", options=[""]+usuarios, index=(usuarios.index(asignado_actual) + 1) if asignado_actual in usuarios else 0, key=f"asignar_{ticket_id}", placeholder=asignado_actual)
             if nuevo_usuario != asignado_actual:
+                email_usuario = obtener_correos_usuarios(nuevo_usuario)
                 conn = sqlite3.connect('helpdesk.db')
                 c = conn.cursor()
                 c.execute("UPDATE tickets SET asignado = ? WHERE id = ?", (nuevo_usuario, ticket_id))
@@ -611,9 +672,18 @@ elif rol == "Admin":
                 rows = obtener_tickets_db()
                 st.session_state.df = pd.DataFrame(
                     rows,
-                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"]
+                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"]
                 )
-                st.rerun()
+                try:
+                    send_email_gmail(
+                        subject=f"Asignacion de ticket: {result['clicked_deal']['id']} → {nuevo_usuario}",
+                        body=f"El ticket:\n\nID: {result['clicked_deal']['id']}\n\nha sido asignado a usted",
+                        to_email=email_usuario)
+                    logger.info(f"Email de notificación enviado para ticket {result['clicked_deal']['id']}")
+                    st.success(f"✅ Email enviado correctamente a {email_usuario}")
+                except Exception as e:
+                    st.warning(f"No se pudo enviar el email de notificación: {e}")
+            st.rerun()
         with cols[2]:
             # --------- Selección y cambio de prioridad ---------
             conn = sqlite3.connect('helpdesk.db')
@@ -638,7 +708,7 @@ elif rol == "Admin":
                 rows = obtener_tickets_db()
                 st.session_state.df = pd.DataFrame(
                     rows,
-                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"]
+                    columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"]
                 )
                 st.rerun()
         with st.expander("Detalles del ticket"):
@@ -648,6 +718,28 @@ elif rol == "Admin":
             st.write("📅 Fecha:", result["clicked_deal"]["date"])
             st.write("👤 Usuario:", result["clicked_deal"]["underwriter"])
             st.write("⚠️ Prioridad:", result["clicked_deal"]["currency"])
+            # -- Botón archivar para tickets cerrados (solo admin) --
+            ticket_id = result["clicked_deal"]["id"]
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute("SELECT status, tipo FROM tickets WHERE id = ?", (ticket_id,))
+            row = c.fetchone()
+            conn.close()
+            status_ticket, tipo_ticket = row if row else (None, None)
+            if status_ticket == "Cerrado" and tipo_ticket != "archivado":
+                if st.button("Archivar este ticket", key=f"archivar_{ticket_id}"):
+                    conn = sqlite3.connect('helpdesk.db')
+                    c = conn.cursor()
+                    c.execute("UPDATE tickets SET tipo = 'archivado' WHERE id = ?", (ticket_id,))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Ticket {ticket_id} archivado y removido de la vista kanban.")
+                    # Actualizar DF en session
+                    rows = obtener_tickets_db()
+                    st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+                    st.rerun()
+            elif tipo_ticket == "archivado":
+                st.info("Este ticket ya está archivado.")
     def obtener_historial(ticket_id):
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
@@ -806,3 +898,62 @@ elif rol == "Admin":
         )
     )
     st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+
+if rol == 'Admin' or rol == 'Soporte':
+    st.markdown("Funciones avanzadas")
+    adv = st.text_input("Contraseña", type="password")
+    if adv == "test":
+        st.success("acceso concedido")
+        st.subheader("Base de datos interna (SQLite)")
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        c.execute('SELECT name FROM sqlite_master WHERE type="table"')
+        tables = c.fetchall()
+        st.write("Tablas en la base de datos:")
+        for table in tables:
+            st.write(f"- {table[0]}")
+        conn.close()
+        # ejecutar sql
+        sql = st.text_area("Consulta SQL", height=100)
+        if st.button("Ejecutar"):
+            try:
+                conn = sqlite3.connect('helpdesk.db')
+                df = pd.read_sql_query(sql, conn)
+                conn.close()
+                st.write("Resultados:")
+                st.dataframe(df)
+            except Exception as e:
+                st.error(f"Error al ejecutar la consulta: {e}")
+        # Descargar archivo db
+        if st.button("Descargar base de datos"):
+            with open("helpdesk_backup.db", "rb") as f:
+                st.download_button("Descargar", f, file_name="helpdesk_backup.db")
+        # exportar db a sql con create table if not exist y boton de descarga
+        if st.button("Exportar base de datos a SQL"):
+            conn = sqlite3.connect('helpdesk.db')
+            with open("helpdesk_backup.sql", "w") as f:
+                for line in conn.iterdump():
+                    f.write(f"{line}\n")
+            conn.close()
+            st.success("Base de datos exportada como 'helpdesk_backup.sql'")
+            with open("helpdesk_backup.sql", "r") as f:
+                st.download_button("Descargar", f, file_name="helpdesk_backup.sql")
+        # importar archivo sql a bd
+        sql_import = st.file_uploader("Subir archivo SQL", type="sql")
+        if st.button("Importar base de datos desde SQL"):
+            if sql_import is not None:
+                conn = sqlite3.connect('helpdesk.db')
+                cursor = conn.cursor()
+                # Leer el SQL y modificarlo antes de ejecutarlo
+                sql_text = sql_import.read().decode("utf-8")
+                import re
+                # Cambiar CREATE TABLE por CREATE TABLE IF NOT EXISTS
+                sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
+                # Cambiar INSERT por INSERT OR IGNORE (para evitar duplicados)
+                sql_text = re.sub(r"INSERT INTO", "INSERT OR IGNORE INTO", sql_text)
+                cursor.executescript(sql_text)
+                conn.commit()
+                conn.close()
+                st.success("Base de datos importada desde SQL.")
+            else:
+                st.error("Por favor, sube un archivo SQL.")

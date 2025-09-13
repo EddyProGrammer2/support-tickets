@@ -60,7 +60,7 @@ def send_email_gmail(subject, body, to_email):
     except Exception as e:
         print(f"Error enviando email: {e}")
 
-EMAIL_DESTINO_SOPORTE = 'digitalizaciones.alu@gmail.com'
+EMAIL_DESTINO_SOPORTE = 'digitalizacion.alu@gmail.com'
 
 # Configuración de la página y título.
 st.set_page_config(page_title="Tickets de soporte", page_icon="🎫")
@@ -191,7 +191,7 @@ if rol == "Usuario":
             st.warning(f"No se pudo enviar el email de notificación: {e}")
         # Recargar los tickets desde la base de datos
         rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
+        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     else:
         st.warning("Debe llenar todos los campos obligatorios.")
 
@@ -261,6 +261,7 @@ elif rol == "Soporte":
             "date": row["Date Submitted"],
             "underwriter": row["usuario"] or "",
             "currency": row["Priority"],
+            "email": row["email"],
             "source": "VV",
             "custom_html": f"""
     <div>
@@ -299,6 +300,13 @@ elif rol == "Soporte":
     # Procesar cambios de estado
     if result and result.get("moved_deal"):
         moved_id = result["moved_deal"]["deal_id"]
+        # Buscar el deal original
+        moved_deal_full = next((d for d in deals if d["deal_id"] == moved_id), None)
+        if moved_deal_full:
+            email_moved = moved_deal_full.get("email", "No disponible")
+            username = moved_deal_full.get("underwriter", "Usuario")
+        else:
+            st.warning("No se encontró el ticket movido en la lista de deals.")
         nuevo_estado = result["moved_deal"]["to_stage"]
         conn = sqlite3.connect('helpdesk.db')
         c = conn.cursor()
@@ -308,7 +316,19 @@ elif rol == "Soporte":
         st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
         # Recargar los tickets desde la base de datos para reflejar el cambio
         rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado"])
+        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+        try:
+            send_email_gmail(
+                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
+                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
+                to_email=email_moved)
+            logger.info(f"Email de notificación enviado para ticket {moved_id}")
+            st.success(f"✅ Email enviado correctamente a {email_moved}")
+        except Exception as e:
+            st.warning(f"No se pudo enviar el email de notificación: {e}")
+        # Recargar los tickets desde la base de datos para reflejar el cambio
+        rows = obtener_tickets_db()
+        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     # Mostrar detalles si se selecciona un ticket
     if result and result.get("clicked_deal"):
         st.info(f"Ticket seleccionado: {result['clicked_deal']['deal_id']}")
@@ -406,6 +426,14 @@ elif rol == "Soporte":
         if enviar_com and comentario.strip():
             agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
             st.success("Comentario agregado.")
+            try:
+                send_email_gmail(
+                    subject=f"Nuevo comentario en el ticket {result['clicked_deal']['deal_id']}",
+                    body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
+                    to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
+                )
+            except Exception as e:
+                st.warning(f"No se pudo enviar el email de notificación: {e}")
             st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario
@@ -625,7 +653,7 @@ elif rol == "Admin":
         c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
         conn.commit()
         conn.close()
-        st.success(f"Ticket {moved_id} con email {email_moved} movido a estado '{nuevo_estado}'")
+        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
         # Recargar los tickets desde la base de datos para reflejar el cambio
         rows = obtener_tickets_db()
         st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
@@ -633,7 +661,7 @@ elif rol == "Admin":
             send_email_gmail(
                 subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
                 body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                to_email={email_moved})
+                to_email=email_moved)
             logger.info(f"Email de notificación enviado para ticket {moved_id}")
             st.success(f"✅ Email enviado correctamente a {email_moved}")
         except Exception as e:
@@ -683,7 +711,7 @@ elif rol == "Admin":
                     st.success(f"✅ Email enviado correctamente a {email_usuario}")
                 except Exception as e:
                     st.warning(f"No se pudo enviar el email de notificación: {e}")
-            st.rerun()
+                st.rerun()
         with cols[2]:
             # --------- Selección y cambio de prioridad ---------
             conn = sqlite3.connect('helpdesk.db')
@@ -828,6 +856,12 @@ elif rol == "Admin":
         if enviar_com and comentario.strip():
             agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
             st.success("Comentario agregado.")
+            try:
+                send_email_gmail(
+                    subject=f"Nuevo comentario en el ticket {result['clicked_deal']['deal_id']}",
+                    body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
+                    to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
+                )
             st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario

@@ -2,3 +2,4 @@ streamlit
 streamlit-aggrid
 xlsxwriter
 streamlit-kanban-board-goviceversa
+streamlit_kanban

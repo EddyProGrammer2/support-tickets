@@ -862,7 +862,7 @@ elif rol == "Admin":
                     body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
                     to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
                 )
-            st.rerun()
+                st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario
         st.markdown("**Adjuntar archivo al ticket**")

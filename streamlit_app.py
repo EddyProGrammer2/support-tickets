@@ -862,6 +862,8 @@ elif rol == "Admin":
                     body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
                     to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
                 )
+            except Exception as e:
+                st.warning(f"No se pudo enviar el email de notificación: {e}")
             st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario

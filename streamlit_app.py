@@ -1276,9 +1276,9 @@ if rol == 'Soporte' or rol == 'Admin':
         END as categoria_usada
     FROM tickets t
     INNER JOIN tipos_problema tp ON (
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria OR
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 OR
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria_3
+        t.tipo = tp.descripcion || ' - ' || tp.categoria OR
+        t.tipo = tp.descripcion || ' - ' || tp.categoria_2 OR
+        t.tipo = tp.descripcion || ' - ' || tp.categoria_3
     )
     """
     query2 = "SELECT * FROM tipos_problema"

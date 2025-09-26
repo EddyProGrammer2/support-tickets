@@ -13,6 +13,62 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 EMAILS_HABILITADOS = True
 
+def agregar_comentario(ticket_id, usuario, comentario):
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+        c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
+        conn.commit()
+        conn.close()
+
+def on_dismiss():
+        if result and result.get("moved_deal"):
+            moved_id = result["moved_deal"]["deal_id"]
+            nuevo_estado = result["moved_deal"]["from_stage"]
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
+            conn.commit()
+            conn.close()
+            st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
+            # Recargar los tickets desde la base de datos para reflejar el cambio
+            rows = obtener_tickets_db()
+            st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+            st.session_state.dialogo_cerrado = True
+
+@st.dialog("📝 Comentario de cierre", width="small", dismissible=True, on_dismiss=on_dismiss)
+def mostrar_dialogo_comentario(ticket_id):
+    # col1, col2 = st.columns(2)
+    comentario = st.text_area(f"Escribe tu comentario para el ticket {ticket_id}")
+    #   with col1: 
+    if st.button("Guardar comentario"):
+        if comentario.strip() == "":
+            st.warning("El comentario no puede estar vacío.")
+            return
+        agregar_comentario(ticket_id, usuario_actual, comentario)
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
+        conn.commit()
+        conn.close()
+        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
+        # Recargar los tickets desde la base de datos para reflejar el cambio
+        rows = obtener_tickets_db()
+        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+        try:
+            send_email_gmail(
+                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
+                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
+                to_email=email_moved)
+            logger.info(f"Email de notificación enviado para ticket {moved_id}")
+            st.success(f"✅ Email enviado correctamente a {email_moved}")
+        except Exception as e:
+            st.warning(f"No se pudo enviar el email de notificación: {e}")
+            st.success("Comentario de cierre agregado al historial.")
+            time.sleep(2)
+        st.session_state.dialogo_cerrado = True
+        time.sleep(2)
+        st.rerun()
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +85,14 @@ def obtener_credenciales():
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
     c.execute('SELECT username, password, rol from usuarios')
+    credenciales = c.fetchall()
+    conn.close()
+    return credenciales
+
+def obtener_usuarios_sistema():
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('SELECT id, username, password, rol from usuarios')
     credenciales = c.fetchall()
     conn.close()
     return credenciales
@@ -155,13 +219,13 @@ if "df" not in st.session_state:
 # Selección de rol al inicio
 rol = st.sidebar.selectbox(
     "Selecciona tu rol",
-    ["Usuario", "Soporte", "Admin"],
+    ["Usuario", "Soporte", "Admin", "Config"],
     help="Elige si eres usuario final, personal de soporte o administrador"
 )
 
 if rol == "Usuario":
-    tab1, tab2 = st.tabs(["Enviar Ticket", "Tickets pendientes"])
-    with tab1:
+    #tab1, tab2 = st.tabs(["Enviar Ticket", "Tickets pendientes"])
+   # with tab1:
         # Inicializar session_state
         if 'tipo_seleccionado' not in st.session_state:
             st.session_state.tipo_seleccionado = "Seleccione"
@@ -202,7 +266,7 @@ if rol == "Usuario":
                 
                 issue = st.text_area("Describe el problema")
                 priority = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
-                archivo_usuario = st.file_uploader("Adjuntar archivo (opcional)", type=None, key="file_usuario")
+                archivo_usuario = st.file_uploader("Adjuntar archivo (opcional)", type=["jpg", "jpeg", "png"], key="file_usuario")
                 submitted = st.form_submit_button("Enviar ticket")
 
             if submitted and usuario and email and sede and categorias and issue and priority:
@@ -245,13 +309,6 @@ if rol == "Usuario":
                     conn.commit()
                     conn.close()
                     # Registrar en historial
-                    def agregar_comentario(ticket_id, usuario, comentario):
-                        conn = sqlite3.connect('helpdesk.db')
-                        c = conn.cursor()
-                        fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-                        c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
-                        conn.commit()
-                        conn.close()
                     agregar_comentario(new_ticket[0], usuario_adj, f"[Archivo adjunto BD]({nombre_archivo})")
                     st.success(f"Archivo '{archivo_usuario.name}' adjuntado al ticket.")
                 # Notificación por email a soporte
@@ -268,143 +325,143 @@ if rol == "Usuario":
                 st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             else:
                 st.warning("Debe llenar todos los campos obligatorios.")
-    with tab2:
-        st.header("Tickets enviados")
+    # with tab2:
+    #     st.header("Tickets enviados")
         
-        # Filtro por usuario
-        usuario_filtro = st.text_input("Filtrar por usuario", placeholder="Nombre y Apellido")
-        if usuario_filtro:
-            df_usuario = st.session_state.df[st.session_state.df['usuario'].str.contains(usuario_filtro, case=False, na=False)]
-        else:
-            df_usuario = st.session_state.df[st.session_state.df['tipo'] != 'archivado'].copy()
+    #     # Filtro por usuario
+    #     usuario_filtro = st.text_input("Filtrar por usuario", placeholder="Nombre y Apellido")
+    #     if usuario_filtro:
+    #         df_usuario = st.session_state.df[st.session_state.df['usuario'].str.contains(usuario_filtro, case=False, na=False)]
+    #     else:
+    #         df_usuario = st.session_state.df[st.session_state.df['tipo'] != 'archivado'].copy()
         
-        # Métricas principales
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total tickets", len(df_usuario))
-        with col2:
-            tickets_abiertos = len(df_usuario[df_usuario['Status'].isin(['Abierto', 'Open', 'Pendiente'])])
-            st.metric("Tickets abiertos", tickets_abiertos)
-        with col3:
-            tickets_urgentes = len(df_usuario[df_usuario['Priority'] == 'Alta'])
-            st.metric("Prioridad alta", tickets_urgentes)
-        with col4:
-            tickets_resueltos = len(df_usuario[df_usuario['Status'].isin(['Resuelto', 'Cerrado', 'Closed'])])
-            st.metric("Resueltos", tickets_resueltos)
+    #     # Métricas principales
+    #     col1, col2, col3, col4 = st.columns(4)
+    #     with col1:
+    #         st.metric("Total tickets", len(df_usuario))
+    #     with col2:
+    #         tickets_abiertos = len(df_usuario[df_usuario['Status'].isin(['Abierto', 'Open', 'Pendiente'])])
+    #         st.metric("Tickets abiertos", tickets_abiertos)
+    #     with col3:
+    #         tickets_urgentes = len(df_usuario[df_usuario['Priority'] == 'Alta'])
+    #         st.metric("Prioridad alta", tickets_urgentes)
+    #     with col4:
+    #         tickets_resueltos = len(df_usuario[df_usuario['Status'].isin(['Resuelto', 'Cerrado', 'Closed'])])
+    #         st.metric("Resueltos", tickets_resueltos)
         
-        # Gráficos de distribución
-        col1, col2 = st.columns(2)
+    #     # Gráficos de distribución
+    #     col1, col2 = st.columns(2)
         
-        with col1:
-            # Distribución por tipo
-            tipo_counts = df_usuario['tipo'].value_counts()
-            if not tipo_counts.empty:
-                fig_tipo = px.pie(values=tipo_counts.values, names=tipo_counts.index, 
-                                title="Distribución por Tipo")
-                st.plotly_chart(fig_tipo, use_container_width=True)
+    #     with col1:
+    #         # Distribución por tipo
+    #         tipo_counts = df_usuario['tipo'].value_counts()
+    #         if not tipo_counts.empty:
+    #             fig_tipo = px.pie(values=tipo_counts.values, names=tipo_counts.index, 
+    #                             title="Distribución por Tipo")
+    #             st.plotly_chart(fig_tipo, use_container_width=True)
         
-        with col2:
-            # Distribución por prioridad
-            prioridad_counts = df_usuario['Priority'].value_counts()
-            if not prioridad_counts.empty:
-                fig_prioridad = px.bar(x=prioridad_counts.index, y=prioridad_counts.values,
-                                    title="Tickets por Prioridad", 
-                                    labels={'x': 'Prioridad', 'y': 'Cantidad'})
-                st.plotly_chart(fig_prioridad, use_container_width=True)
+    #     with col2:
+    #         # Distribución por prioridad
+    #         prioridad_counts = df_usuario['Priority'].value_counts()
+    #         if not prioridad_counts.empty:
+    #             fig_prioridad = px.bar(x=prioridad_counts.index, y=prioridad_counts.values,
+    #                                 title="Tickets por Prioridad", 
+    #                                 labels={'x': 'Prioridad', 'y': 'Cantidad'})
+    #             st.plotly_chart(fig_prioridad, use_container_width=True)
         
 
-        # Tabla detallada
-        st.subheader("Lista detallada de tickets")
-        gb = GridOptionsBuilder.from_dataframe(df_usuario)
+    #     # Tabla detallada
+    #     st.subheader("Lista detallada de tickets")
+    #     gb = GridOptionsBuilder.from_dataframe(df_usuario)
 
-        # Ocultar todas las columnas excepto las 2 que quieres mostrar
-        columnas_a_ocultar = [col for col in df_usuario.columns if col not in ['ID', 'Issue', 'tipo']]  
-        for col in columnas_a_ocultar:
-            gb.configure_column(col, hide=True)
+    #     # Ocultar todas las columnas excepto las 2 que quieres mostrar
+    #     columnas_a_ocultar = [col for col in df_usuario.columns if col not in ['ID', 'Issue', 'tipo']]  
+    #     for col in columnas_a_ocultar:
+    #         gb.configure_column(col, hide=True)
 
-        gb.configure_pagination(paginationAutoPageSize=True)
-        gb.configure_side_bar()
-        gb.configure_selection('single')
-        gridOptions = gb.build()
+    #     gb.configure_pagination(paginationAutoPageSize=True)
+    #     gb.configure_side_bar()
+    #     gb.configure_selection('single')
+    #     gridOptions = gb.build()
 
-        grid_response = AgGrid(
-            df_usuario,
-            gridOptions=gridOptions,
-            enable_enterprise_modules=True,
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            theme='streamlit',
-            height=400,
-            fit_columns_on_grid_load=True,
-            allow_unsafe_jscode=True,
-        )
+    #     grid_response = AgGrid(
+    #         df_usuario,
+    #         gridOptions=gridOptions,
+    #         enable_enterprise_modules=True,
+    #         update_mode=GridUpdateMode.SELECTION_CHANGED,
+    #         theme='streamlit',
+    #         height=400,
+    #         fit_columns_on_grid_load=True,
+    #         allow_unsafe_jscode=True,
+    #     )
         
-        # Detalles del ticket seleccionado
-        selected_rows = grid_response['selected_rows']
-        if selected_rows is not None and not selected_rows.empty:
-            selected_ticket = selected_rows.iloc[0]
+    #     # Detalles del ticket seleccionado
+    #     selected_rows = grid_response['selected_rows']
+    #     if selected_rows is not None and not selected_rows.empty:
+    #         selected_ticket = selected_rows.iloc[0]
             
-            # Color según prioridad
-            color_prioridad = {
-                'Alta': '#ff4b4b',
-                'Media': '#ffa500', 
-                'Baja': '#00cc00'
-            }.get(selected_ticket['Priority'], '#6c757d')
+    #         # Color según prioridad
+    #         color_prioridad = {
+    #             'Alta': '#ff4b4b',
+    #             'Media': '#ffa500', 
+    #             'Baja': '#00cc00'
+    #         }.get(selected_ticket['Priority'], '#6c757d')
             
-            # Solo el encabezado en HTML
-            st.markdown(f"""
-            <div style='
-                background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-                border-left: 5px solid {color_prioridad};
-                border-radius: 10px 10px 0 0;
-                padding: 20px 20px 10px 20px;
-                margin: 10px 0 0 0;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            '>
-                <div style='display: flex; justify-content: space-between; align-items: center;'>
-                    <h3 style='margin: 0; color: #2c3e50;'>Ticket #{selected_ticket['ID']}</h3>
-                    <span style='background-color: {color_prioridad}; color: white; padding: 5px 10px; border-radius: 15px; font-size: 12px;'>
-                        {selected_ticket['Priority']}
-                    </span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+    #         # Solo el encabezado en HTML
+    #         st.markdown(f"""
+    #         <div style='
+    #             background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    #             border-left: 5px solid {color_prioridad};
+    #             border-radius: 10px 10px 0 0;
+    #             padding: 20px 20px 10px 20px;
+    #             margin: 10px 0 0 0;
+    #             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    #         '>
+    #             <div style='display: flex; justify-content: space-between; align-items: center;'>
+    #                 <h3 style='margin: 0; color: #2c3e50;'>Ticket #{selected_ticket['ID']}</h3>
+    #                 <span style='background-color: {color_prioridad}; color: white; padding: 5px 10px; border-radius: 15px; font-size: 12px;'>
+    #                     {selected_ticket['Priority']}
+    #                 </span>
+    #             </div>
+    #         </div>
+    #         """, unsafe_allow_html=True)
             
-            # Contenido en Streamlit nativo dentro de un container con estilo
-            with st.container():
-                st.markdown(f"### {selected_ticket['Issue']}")
+    #         # Contenido en Streamlit nativo dentro de un container con estilo
+    #         with st.container():
+    #             st.markdown(f"### {selected_ticket['Issue']}")
                 
-                # Icono según estado
-                icono_estado = {
-                    'Abierto': '⏳',
-                    'Open': '⏳',
-                    'Pendiente': '⏳',
-                    'Resuelto': '✅',
-                    'Cerrado': '✅',
-                    'Closed': '✅',
-                    'archivado': '📁'
-                }.get(selected_ticket['Status'], '📄')
+    #             # Icono según estado
+    #             icono_estado = {
+    #                 'Abierto': '⏳',
+    #                 'Open': '⏳',
+    #                 'Pendiente': '⏳',
+    #                 'Resuelto': '✅',
+    #                 'Cerrado': '✅',
+    #                 'Closed': '✅',
+    #                 'archivado': '📁'
+    #             }.get(selected_ticket['Status'], '📄')
                 
-                # Información en columnas
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**{icono_estado} Estado:** {selected_ticket['Status']}")
-                    st.write(f"**📊 Tipo:** {selected_ticket['tipo']}")
-                    st.write(f"**🏢 Sede:** {selected_ticket['sede']}")
-                with col2:
-                    st.write(f"**📅 Fecha:** {selected_ticket['Date Submitted']}")
-                    st.write(f"**👤 Asignado a:** {selected_ticket['asignado'] if selected_ticket['asignado'] else 'No asignado'}")
-                    st.write(f"**👥 Usuario:** {selected_ticket['usuario']}")
+    #             # Información en columnas
+    #             col1, col2 = st.columns(2)
+    #             with col1:
+    #                 st.write(f"**{icono_estado} Estado:** {selected_ticket['Status']}")
+    #                 st.write(f"**📊 Tipo:** {selected_ticket['tipo']}")
+    #                 st.write(f"**🏢 Sede:** {selected_ticket['sede']}")
+    #             with col2:
+    #                 st.write(f"**📅 Fecha:** {selected_ticket['Date Submitted']}")
+    #                 st.write(f"**👤 Asignado a:** {selected_ticket['asignado'] if selected_ticket['asignado'] else 'No asignado'}")
+    #                 st.write(f"**👥 Usuario:** {selected_ticket['usuario']}")
                 
-                # Línea separadora
-                st.divider()
+    #             # Línea separadora
+    #             st.divider()
                 
-        else:
-            st.info("Seleccione un ticket para ver los detalles.")
+    #     else:
+    #         st.info("Seleccione un ticket para ver los detalles.")
 elif rol == "Soporte":
     # Autenticación simple para soporte
     if "auth_soporte" not in st.session_state:
         st.session_state.auth_soporte = False
-        st.session_state.user = None
+        st.session_state.user_soporte = None
     if not st.session_state.auth_soporte:
         st.header("Acceso restringido para soporte")
         with st.form("login_soporte"):
@@ -415,8 +472,8 @@ elif rol == "Soporte":
             for user_bd, pwd_bd, rol_bd in obtener_credenciales():
                 if user == user_bd and pwd == pwd_bd and rol_bd != "admin":
                     st.session_state.auth_soporte = True
-                    st.session_state.user = user_bd
-                    st.success(f"Acceso concedido. Bienvenido, {user_bd}.")
+                    st.session_state.user_soporte = user_bd
+                    st.success(f"Acceso concedido. Bienvenido, {st.session_state.user_soporte}.")
                     time.sleep(1)
                     st.rerun()
                 if user == user_bd and pwd == pwd_bd and rol_bd == "admin":
@@ -424,8 +481,8 @@ elif rol == "Soporte":
             else:
                 st.error("Usuario o contraseña incorrectos.")
         st.stop()
-    st.info(f"Sesion de Usuario: {st.session_state.user}")
-    usuario_actual = st.session_state.user
+    st.info(f"Sesion de Usuario: {st.session_state.user_soporte}")
+    usuario_actual = st.session_state.user_soporte
     st.header("Gestión de tickets de soporte")
     # boton de cerrar sesion
     if st.sidebar.button("Cerrar sesión"):
@@ -487,9 +544,6 @@ elif rol == "Soporte":
             "source": "VV",
             "type": row["tipo"],
             "custom_html": f"""
-    <div>
-        <p style='color: black;'>{row['Issue']}</p>
-    </div>
     <div style='display: flex; flex-direction: row; align-items: center; justify-content: space-between;'>
         <p style='color:{get_priority_color(row["Priority"])}; margin:0; padding:0;'>
             Prioridad: {row["Priority"]}
@@ -509,7 +563,6 @@ elif rol == "Soporte":
         }
         for _, row in df_filtrado.iterrows()
     ]
-    st.markdown("### Tickets Kanban")
 
     user_info = {
     "role": "riskManager",
@@ -526,7 +579,8 @@ elif rol == "Soporte":
     key="kanban_tickets"
 )
     selected_ticket_id = result.get("clicked_deal")
-
+    if 'dialogo_cerrado' not in st.session_state:
+        st.session_state.dialogo_cerrado = False 
     # Procesar cambios de estado
     if result and result.get("moved_deal"):
         moved_id = result["moved_deal"]["deal_id"]
@@ -538,28 +592,36 @@ elif rol == "Soporte":
         else:
             st.warning("No se encontró el ticket movido en la lista de deals.")
         nuevo_estado = result["moved_deal"]["to_stage"]
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
-        conn.commit()
-        conn.close()
-        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
-        # Recargar los tickets desde la base de datos para reflejar el cambio
-        rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
-        try:
-            send_email_gmail(
-                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
-                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                to_email=email_moved)
-            logger.info(f"Email de notificación enviado para ticket {moved_id}")
-            st.success(f"✅ Email enviado correctamente a {email_moved}")
-        except Exception as e:
-            st.warning(f"No se pudo enviar el email de notificación: {e}")
+        if (nuevo_estado == "Cerrado" and moved_id not in df[df["Status"] == "Cerrado"]["ID"].values and not st.session_state.dialogo_cerrado):
+            mostrar_dialogo_comentario(moved_id)
+            st.stop()
+        else:
+            st.session_state.dialogo_cerrado = False
+        if nuevo_estado != "Cerrado" or (nuevo_estado == "Cerrado" and st.session_state.dialogo_cerrado):
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
+            conn.commit()
+            conn.close()
+            st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
+            # Recargar los tickets desde la base de datos para reflejar el cambio
+            rows = obtener_tickets_db()
+            st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+            try:
+                send_email_gmail(
+                    subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
+                    body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
+                    to_email=email_moved)
+                logger.info(f"Email de notificación enviado para ticket {moved_id}")
+                st.success(f"✅ Email enviado correctamente a {email_moved}")
+            except Exception as e:
+                st.warning(f"No se pudo enviar el email de notificación: {e}")
         # Recargar los tickets desde la base de datos para reflejar el cambio
         rows = obtener_tickets_db()
         st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     # Mostrar detalles si se selecciona un ticket
+
+
     if result and result.get("clicked_deal"):
         st.info(f"Ticket seleccionado: {result['clicked_deal']['deal_id']}")
         with st.expander("Detalles del ticket"):
@@ -578,14 +640,6 @@ elif rol == "Soporte":
             rows = c.fetchall()
             conn.close()
             return rows
-
-    def agregar_comentario(ticket_id, usuario, comentario):
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-            c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
-            conn.commit()
-            conn.close()
 
     st.markdown("---")
     if result.get("clicked_deal"):
@@ -618,7 +672,7 @@ elif rol == "Soporte":
                             ext = os.path.splitext(nombre_archivo)[1].lower()
                             if tipo_mime and tipo_mime.startswith("image"):
                                 import io
-                                st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
+                                st.image(io.BytesIO(contenido), caption=nombre_archivo, width=200)
                             elif tipo_mime and tipo_mime.startswith("video"):
                                 import io
                                 st.video(io.BytesIO(contenido))
@@ -638,7 +692,7 @@ elif rol == "Soporte":
                         st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
                         if os.path.exists(ruta):
                             if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
-                                st.image(ruta, caption=nombre_archivo, use_container_width=True)
+                                st.image(ruta, caption=nombre_archivo, width=200)
                             elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
                                 st.video(ruta)
                             else:
@@ -769,6 +823,7 @@ elif rol == "Soporte":
 elif rol == "Admin":
     if "auth_admin" not in st.session_state:
         st.session_state.auth_admin = False
+        st.session_state.user_admin = None
     if not st.session_state.auth_admin:
         st.header("Acceso restringido para Admin")
         with st.form("login_soporte"):
@@ -779,17 +834,18 @@ elif rol == "Admin":
             for user_bd, pwd_bd, rol_bd in obtener_credenciales():
                 if user == user_bd and pwd == pwd_bd and rol_bd == "admin":
                     st.session_state.auth_admin = True
-                    st.session_state.user = user_bd
-                    st.success("Acceso concedido. Bienvenido, Admin.")
+                    st.session_state.user_admin = user_bd
+                    st.success(f"Acceso concedido. Bienvenido, {st.session_state.user_admin}.")
+                    time.sleep(2)
                     st.rerun()
                 if user == user_bd and pwd == pwd_bd and rol_bd != "admin":
                     st.warning("Solo los usuarios administradores tienen acceso")
             else:
                 st.error("Usuario o contraseña incorrectos.")
         st.stop()
-
+    usuario_actual = st.session_state.user_admin
     if st.session_state.auth_admin:
-        st.header("Bienvenido, Admin")
+        st.header(f"Bienvenido, {usuario_actual}")
         # boton de cerrar sesion
         if st.sidebar.button("Cerrar sesión"):
             st.session_state.auth_admin = False
@@ -847,9 +903,6 @@ elif rol == "Admin":
             "email": row["email"],
             "type": row["tipo"],
             "custom_html": f"""
-    <div>
-        <p style='color: black;'>{row['Issue']}</p>
-    </div>
     <div style='display: flex; flex-direction: row; align-items: center; justify-content: space-between;'>
         <p style='color:{get_priority_color(row["Priority"])}; margin:0; padding:0;'>
             Prioridad: {row["Priority"]}
@@ -868,7 +921,6 @@ elif rol == "Admin":
         }
         for _, row in df.iterrows()
     ]
-    st.markdown("### Tickets Kanban")
 
     user_info = {
         "role": "riskManager",
@@ -886,6 +938,16 @@ elif rol == "Admin":
     )
 
     # Procesar cambios de estado
+    if 'dialogo_cerrado' not in st.session_state:
+        st.session_state.dialogo_cerrado = False
+    def obtener_historial(ticket_id):
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
+            rows = c.fetchall()
+            conn.close()
+            return rows
+
     if result and result.get("moved_deal"):
         moved_id = result["moved_deal"]["deal_id"]
         # Buscar el deal original
@@ -896,24 +958,30 @@ elif rol == "Admin":
         else:
             st.warning("No se encontró el ticket movido en la lista de deals.")
         nuevo_estado = result["moved_deal"]["to_stage"]
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
-        conn.commit()
-        conn.close()
-        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
-        # Recargar los tickets desde la base de datos para reflejar el cambio
-        rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
-        try:
-            send_email_gmail(
-                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
-                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                to_email=email_moved)
-            logger.info(f"Email de notificación enviado para ticket {moved_id}")
-            st.success(f"✅ Email enviado correctamente a {email_moved}")
-        except Exception as e:
-            st.warning(f"No se pudo enviar el email de notificación: {e}")
+        if (nuevo_estado == "Cerrado" and moved_id not in df[df["Status"] == "Cerrado"]["ID"].values and not st.session_state.dialogo_cerrado):
+            mostrar_dialogo_comentario(moved_id)
+            st.stop()
+        else:
+            st.session_state.dialogo_cerrado = False
+        if nuevo_estado != "Cerrado" or (nuevo_estado == "Cerrado" and st.session_state.dialogo_cerrado):
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
+            conn.commit()
+            conn.close()
+            st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
+            # Recargar los tickets desde la base de datos para reflejar el cambio
+            rows = obtener_tickets_db()
+            st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+            try:
+                send_email_gmail(
+                    subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
+                    body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
+                    to_email=email_moved)
+                logger.info(f"Email de notificación enviado para ticket {moved_id}")
+                st.success(f"✅ Email enviado correctamente a {email_moved}")
+            except Exception as e:
+                st.warning(f"No se pudo enviar el email de notificación: {e}")
 
     # Mostrar detalles si se selecciona un ticket
     if result and result.get("clicked_deal"):
@@ -1097,21 +1165,6 @@ elif rol == "Admin":
                     st.rerun()
             elif tipo_ticket == "archivado":
                 st.info("Este ticket ya está archivado.")
-    def obtener_historial(ticket_id):
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
-            rows = c.fetchall()
-            conn.close()
-            return rows
-
-    def agregar_comentario(ticket_id, usuario, comentario):
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-            c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
-            conn.commit()
-            conn.close()
 
     st.markdown("---")
     if result.get("clicked_deal"):
@@ -1144,7 +1197,7 @@ elif rol == "Admin":
                             ext = os.path.splitext(nombre_archivo)[1].lower()
                             if tipo_mime and tipo_mime.startswith("image"):
                                 import io
-                                st.image(io.BytesIO(contenido), caption=nombre_archivo, use_container_width=True)
+                                st.image(io.BytesIO(contenido), caption=nombre_archivo, width=200)
                             elif tipo_mime and tipo_mime.startswith("video"):
                                 import io
                                 st.video(io.BytesIO(contenido))
@@ -1164,7 +1217,7 @@ elif rol == "Admin":
                         st.info(f"[{fecha}] {usuario_hist if usuario_hist else 'Soporte'}: Archivo adjunto: {nombre_archivo}")
                         if os.path.exists(ruta):
                             if ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]:
-                                st.image(ruta, caption=nombre_archivo, use_container_width=True)
+                                st.image(ruta, caption=nombre_archivo, width=200)
                             elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
                                 st.video(ruta)
                             else:
@@ -1257,6 +1310,212 @@ elif rol == "Admin":
         fig_tipo = px.pie(values=tipo_counts.values, names=tipo_counts.index, 
                         title="Distribución por Tipo")
         st.plotly_chart(fig_tipo, use_container_width=True)
+elif rol == "Config":
+    #----icono de engranaje en el sidebar----#
+    # st.sidebar.button("⚙️", key="config_avanzada")
+    st.markdown("Funciones avanzadas")
+    adv = st.text_input("Contraseña", type="password")
+    if adv == "test":
+        st.success("acceso concedido")
+        st.title("🔐 Panel de administración")
+        st.header("Propositos")
+
+        # Obtener datos de la base de datos
+        conn = sqlite3.connect('helpdesk.db')
+        c = conn.cursor()
+        c.execute('SELECT * FROM tipos_problema')
+        tipos = c.fetchall()
+        conn.close()
+
+        df_tipos = pd.DataFrame(tipos, columns=["id", "tipo", "categoria", "categoria_2", "categoria_3"])
+
+        st.subheader("Propositos predefinidos")
+
+        # Editor interactivo
+        df_editado = st.data_editor(df_tipos, num_rows="dynamic")
+        #-----borrar fila en base de datos si se borra en el editor-----#
+        filas_borradas = set(df_tipos['id']) - set(df_editado['id'])
+        if filas_borradas:
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            for fila_id in filas_borradas:
+                c.execute('DELETE FROM tipos_problema WHERE id = ?', (fila_id,))
+            conn.commit()
+            conn.close()
+            st.toast(f"Filas borradas: {len(filas_borradas)}", icon="✅")
+            time.sleep(2)
+            st.rerun()
+        # Botón para guardar cambios
+        if st.button("💾 Guardar cambios en la base de datos"):
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            for _, row in df_editado.iterrows():
+                c.execute("""
+                    UPDATE tipos_problema
+                    SET descripcion = ?, categoria = ?, categoria_2 = ?, categoria_3 = ?
+                    WHERE id = ?
+                """, (row["tipo"], row["categoria"], row["categoria_2"], row["categoria_3"], row["id"]))
+            conn.commit()
+            conn.close()
+            st.success("✅ Cambios guardados correctamente")
+            st.rerun()
+        with st.expander("Agregar nuevo proposito"):
+            with st.form("form_tipo_problema"):
+                nuevo_tipo = st.text_input("Nuevo proposito")
+                descripcion_tipo = st.text_input("Categoria")
+                descripcion_tipo2 = st.text_input("Categoria 2")
+                descripcion_tipo3 = st.text_input("Categoria 3")
+                submit = st.form_submit_button("Agregar proposito")
+            if submit and nuevo_tipo and descripcion_tipo and nuevo_tipo.strip():
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('INSERT INTO tipos_problema (descripcion, categoria, categoria_2, categoria_3) VALUES (?, ?, ?, ?)', (nuevo_tipo.strip(), descripcion_tipo.strip(), descripcion_tipo2.strip(), descripcion_tipo3.strip()))
+                conn.commit()
+                conn.close()
+                st.toast("Nuevo proposito agregado", icon="✅")
+                time.sleep(2)
+                st.rerun()
+            else:
+                st.warning("Debe llenar al menos el proposito y la categoria 1")
+        st.markdown("---")
+        st.header("Gestión de usuarios")
+        df_usuarios = pd.DataFrame(obtener_usuarios_sistema(), columns=["id", "username", "password", "rol"])
+        df_usuarios_edit = st.data_editor(df_usuarios, num_rows="dynamic")
+        #-----borrar fila en base de datos si se borra en el editor-----#
+        filas_borradas_usuarios = set(df_usuarios['id']) - set(df_usuarios_edit['id'])
+        if filas_borradas_usuarios:
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            for fila_usuario in filas_borradas_usuarios:
+                c.execute('DELETE FROM usuarios WHERE id = ?', (fila_usuario,))
+            conn.commit()
+            conn.close()
+            st.toast(f"Usuarios borrados: {len(filas_borradas_usuarios)}", icon="✅")
+            time.sleep(2)
+            st.rerun()
+        # guardar cambios en la base de datos
+        if st.button("💾 Guardar cambios en usuarios"):
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            for _, row in df_usuarios_edit.iterrows():
+                c.execute("""
+                    UPDATE usuarios
+                    SET password = ?, rol = ?
+                    WHERE username = ?
+                """, (row["contraseña"], row["rol"], row["usuario"]))
+            conn.commit()
+            conn.close()
+            st.toast("Cambios en usuarios guardados", icon="✅")
+            time.sleep(2)
+            st.rerun()
+        with st.expander("Agregar nuevo usuario"):
+            with st.form("form_nuevo_usuario"):
+                nuevo_usuario = st.text_input("Nuevo usuario")
+                nueva_contraseña = st.text_input("Contraseña", type="password")
+                rol_usuario = st.selectbox("Rol", options=["soporte", "admin"])
+                submit_usuario = st.form_submit_button("Agregar usuario")
+            if submit_usuario and nuevo_usuario and nueva_contraseña and nuevo_usuario.strip() and nueva_contraseña.strip():
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('INSERT INTO usuarios (username, password, rol, nombre) VALUES (?, ?, ?, ?)', (nuevo_usuario.strip(), nueva_contraseña.strip(), rol_usuario, ""))
+                conn.commit()
+                conn.close()
+                st.toast("Nuevo usuario agregado", icon="✅")
+                time.sleep(2)
+                st.rerun()
+            else:
+                st.warning("Debe llenar todos los campos")
+        st.markdown("---")
+        st.header("Gestion de Sedes")
+        df_sedes = pd.DataFrame(obtener_sedes_db(), columns=["nombre"])
+        df_sedes_edit = st.data_editor(df_sedes, num_rows="dynamic")
+        with st.expander("Agregar sede"):
+            with st.form("form_nueva_sede"):
+                nueva_sede = st.text_input("Nueva sede")
+                submit_sede = st.form_submit_button("Agregar sede")
+            if submit_sede and nueva_sede and nueva_sede.strip():
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('INSERT INTO sedes (username) VALUES (?)', (nueva_sede))
+                conn.commit()
+                coon.close()
+                st.toast("Nueva sede agregada", icon="✅")
+                time.sleep(2)
+                st.rerun
+            else:
+                st.warning("Debe llenar el campo")
+        st.markdown("---")
+        with st.expander("Base de datos y consultas SQL"):
+            st.subheader("Base de datos interna (SQLite)")
+            conn = sqlite3.connect('helpdesk.db')
+            c = conn.cursor()
+            c.execute('SELECT name FROM sqlite_master WHERE type="table"')
+            tables = c.fetchall()
+            st.write("Tablas en la base de datos:")
+            for table in tables:
+                st.write(f"- {table[0]}")
+            conn.close()
+            # ejecutar sql
+            sql = st.text_area("Consulta SQL", height=100)
+            if st.button("Ejecutar"):
+                try:
+                        conn = sqlite3.connect('helpdesk.db')
+                        
+                        # Detectar el tipo de consulta
+                        sql_upper = sql.strip().upper()
+                        
+                        if sql_upper.startswith('SELECT'):
+                            # Para consultas SELECT que devuelven resultados
+                            df = pd.read_sql_query(sql, conn)
+                            st.write("Resultados:")
+                            st.dataframe(df)
+                            st.write(f"Filas encontradas: {len(df)}")
+                        else:
+                            # Para consultas INSERT, UPDATE, DELETE, etc.
+                            cursor = conn.cursor()
+                            cursor.execute(sql)
+                            conn.commit()
+                            filas_afectadas = cursor.rowcount
+                            st.success(f"Consulta ejecutada exitosamente. Filas afectadas: {filas_afectadas}")
+                        
+                        conn.close()
+                        
+                except Exception as e:
+                    st.error(f"Error al ejecutar la consulta: {e}")
+        # Descargar archivo db
+        if st.button("Descargar base de datos"):
+            with open("helpdesk_backup.db", "rb") as f:
+                st.download_button("Descargar", f, file_name="helpdesk_backup.db")
+        # exportar db a sql con create table if not exist y boton de descarga
+        if st.button("Exportar base de datos a SQL"):
+            conn = sqlite3.connect('helpdesk.db')
+            with open("helpdesk_backup.sql", "w") as f:
+                for line in conn.iterdump():
+                    f.write(f"{line}\n")
+            conn.close()
+            st.success("Base de datos exportada como 'helpdesk_backup.sql'")
+            with open("helpdesk_backup.sql", "r") as f:
+                st.download_button("Descargar", f, file_name="helpdesk_backup.sql")
+        # importar archivo sql a bd
+        sql_import = st.file_uploader("Subir archivo SQL", type="sql")
+        if st.button("Importar base de datos desde SQL"):
+            if sql_import is not None:
+                conn = sqlite3.connect('helpdesk.db')
+                cursor = conn.cursor()
+                # Leer el SQL y modificarlo antes de ejecutarlo
+                sql_text = sql_import.read().decode("utf-8")
+                import re
+                # Cambiar CREATE TABLE por CREATE TABLE IF NOT EXISTS
+                sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
+                # Cambiar INSERT por INSERT OR IGNORE (para evitar duplicados)
+                sql_text = re.sub(r"INSERT INTO", "INSERT OR IGNORE INTO", sql_text)
+                cursor.executescript(sql_text)
+                conn.commit()
+                conn.close()
+                st.success("Base de datos importada desde SQL.")
+            else:
+                st.error("Por favor, sube un archivo SQL.")
+#------------------------------------------------------------Reporteria-----------------------------------------------#
 if rol == 'Soporte' or rol == 'Admin':
     conn = sqlite3.connect('helpdesk.db')
 
@@ -1276,9 +1535,9 @@ if rol == 'Soporte' or rol == 'Admin':
         END as categoria_usada
     FROM tickets t
     INNER JOIN tipos_problema tp ON (
-        t.tipo = tp.descripcion || ' - ' || tp.categoria OR
-        t.tipo = tp.descripcion || ' - ' || tp.categoria_2 OR
-        t.tipo = tp.descripcion || ' - ' || tp.categoria_3
+        t.tipo = tp.descripcion || ' - ' || tp.Categoria OR
+        t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 OR
+        t.tipo = tp.descripcion || ' - ' || tp.Categoria_3
     )
     """
     query2 = "SELECT * FROM tipos_problema"
@@ -1353,127 +1612,5 @@ if rol == 'Soporte' or rol == 'Admin':
             st.warning("No hay categorías disponibles para este propósito.")
     else:
         st.info("Selecciona un propósito para ver las categorías disponibles.")
+#------------------------------------------------------------Admin----------------------------------------------------------------------------------#
 
-if rol == 'Admin' or rol == 'Soporte':
-    st.markdown("Funciones avanzadas")
-    adv = st.text_input("Contraseña", type="password")
-    if adv == "test":
-        st.success("acceso concedido")
-        st.title("🔐 Panel de administración")
-        st.header("Propositos")
-
-        # Obtener datos de la base de datos
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        c.execute('SELECT * FROM tipos_problema')
-        tipos = c.fetchall()
-        conn.close()
-
-        df_tipos = pd.DataFrame(tipos, columns=["id", "tipo", "categoria", "categoria_2", "categoria_3"])
-
-        st.subheader("Propositos predefinidos")
-
-        # Editor interactivo
-        df_editado = st.data_editor(df_tipos, num_rows="dynamic")
-
-        # Botón para guardar cambios
-        if st.button("💾 Guardar cambios en la base de datos"):
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            for _, row in df_editado.iterrows():
-                c.execute("""
-                    UPDATE tipos_problema
-                    SET descripcion = ?, categoria = ?, categoria_2 = ?, categoria_3 = ?
-                    WHERE id = ?
-                """, (row["tipo"], row["categoria"], row["categoria_2"], row["categoria_3"], row["id"]))
-            conn.commit()
-            conn.close()
-            st.success("✅ Cambios guardados correctamente")
-            st.rerun()
-
-        with st.form("form_tipo_problema"):
-            nuevo_tipo = st.text_input("Nuevo proposito")
-            descripcion_tipo = st.text_input("Categoria")
-            descripcion_tipo2 = st.text_input("Categoria 2")
-            descripcion_tipo3 = st.text_input("Categoria 3")
-            submit = st.form_submit_button("Agregar proposito")
-        if submit and agregar_tipo and descripcion_tipo and nuevo_tipo.strip():
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            c.execute('INSERT INTO tipos_problema (descripcion, categoria, categoria_2, categoria_3) VALUES (?, ?, ?, ?)', (nuevo_tipo.strip(), descripcion_tipo.strip(), descripcion_tipo2.strip(), descripcion_tipo3.strip()))
-            conn.commit()
-            conn.close()
-            st.success(f"Proposito'{nuevo_tipo}' agregado.")
-            st.rerun()
-        else:
-            st.warning("Debe llenar al menos el proposito y la categoria 1")
-        st.markdown("---")
-        st.subheader("Base de datos interna (SQLite)")
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        c.execute('SELECT name FROM sqlite_master WHERE type="table"')
-        tables = c.fetchall()
-        st.write("Tablas en la base de datos:")
-        for table in tables:
-            st.write(f"- {table[0]}")
-        conn.close()
-        # ejecutar sql
-        sql = st.text_area("Consulta SQL", height=100)
-        if st.button("Ejecutar"):
-            try:
-                    conn = sqlite3.connect('helpdesk.db')
-                    
-                    # Detectar el tipo de consulta
-                    sql_upper = sql.strip().upper()
-                    
-                    if sql_upper.startswith('SELECT'):
-                        # Para consultas SELECT que devuelven resultados
-                        df = pd.read_sql_query(sql, conn)
-                        st.write("Resultados:")
-                        st.dataframe(df)
-                        st.write(f"Filas encontradas: {len(df)}")
-                    else:
-                        # Para consultas INSERT, UPDATE, DELETE, etc.
-                        cursor = conn.cursor()
-                        cursor.execute(sql)
-                        conn.commit()
-                        filas_afectadas = cursor.rowcount
-                        st.success(f"Consulta ejecutada exitosamente. Filas afectadas: {filas_afectadas}")
-                    
-                    conn.close()
-                    
-            except Exception as e:
-                st.error(f"Error al ejecutar la consulta: {e}")
-        # Descargar archivo db
-        if st.button("Descargar base de datos"):
-            with open("helpdesk_backup.db", "rb") as f:
-                st.download_button("Descargar", f, file_name="helpdesk_backup.db")
-        # exportar db a sql con create table if not exist y boton de descarga
-        if st.button("Exportar base de datos a SQL"):
-            conn = sqlite3.connect('helpdesk.db')
-            with open("helpdesk_backup.sql", "w") as f:
-                for line in conn.iterdump():
-                    f.write(f"{line}\n")
-            conn.close()
-            st.success("Base de datos exportada como 'helpdesk_backup.sql'")
-            with open("helpdesk_backup.sql", "r") as f:
-                st.download_button("Descargar", f, file_name="helpdesk_backup.sql")
-        # importar archivo sql a bd
-        sql_import = st.file_uploader("Subir archivo SQL", type="sql")
-        if st.button("Importar base de datos desde SQL"):
-            if sql_import is not None:
-                conn = sqlite3.connect('helpdesk.db')
-                cursor = conn.cursor()
-                # Leer el SQL y modificarlo antes de ejecutarlo
-                sql_text = sql_import.read().decode("utf-8")
-                import re
-                # Cambiar CREATE TABLE por CREATE TABLE IF NOT EXISTS
-                sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
-                # Cambiar INSERT por INSERT OR IGNORE (para evitar duplicados)
-                sql_text = re.sub(r"INSERT INTO", "INSERT OR IGNORE INTO", sql_text)
-                cursor.executescript(sql_text)
-                conn.commit()
-                conn.close()
-                st.success("Base de datos importada desde SQL.")
-            else:
-                st.error("Por favor, sube un archivo SQL.")

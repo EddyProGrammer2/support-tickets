@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime, timedelta
 import random
 import sqlite3
 import logging
@@ -12,11 +12,92 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 EMAILS_HABILITADOS = True
+fecha_actual = datetime.now().strftime("%d-%m-%Y %H:%M")
+
+
+
+# funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral
+def calcular_dias_transcurridos(fecha_creacion):
+    if isinstance(fecha_creacion, str):
+        fecha_creacion_dt = datetime.strptime(fecha_creacion, '%d-%m-%Y')
+    elif isinstance(fecha_creacion, datetime):
+        fecha_creacion_dt = fecha_creacion
+    else:
+        return 0  # o manejar el error como prefieras
+
+    fecha_actual_dt = datetime.now()
+    dias_transcurridos = 0
+    dia_actual = fecha_creacion_dt
+
+    while dia_actual.date() <= fecha_actual_dt.date():
+        if dia_actual.weekday() < 5:  # Lunes a Viernes
+            dias_transcurridos += 1
+        dia_actual += timedelta(days=1)
+
+    return dias_transcurridos
+
+def obtener_tiempo_primera_respuesta():
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('''
+SELECT 
+    (julianday(
+        MIN(substr(h.fecha, 7, 4) || '-' || substr(h.fecha, 4, 2) || '-' || substr(h.fecha, 1, 2))
+    ) - 
+    julianday(
+        MIN(substr(t.date_submitted, 7, 4) || '-' || substr(t.date_submitted, 4, 2) || '-' || substr(t.date_submitted, 1, 2))
+    )) * 24.0 AS horas_primera_respuesta
+FROM 
+    tickets t
+JOIN 
+    historial h ON t.id = h.ticket_id
+WHERE 
+    h.comentario IS NOT NULL
+GROUP BY 
+    t.id;
+
+    ''')
+    tiempos = c.fetchall()
+    conn.close()
+    if tiempos:
+        return round(np.mean([t[0] for t in tiempos if t[0] is not None]), 2)
+    return None
+
+# Funcion para calcular promedio de tiempo de resolución (tickets cerrados)
+
+def obtener_tiempo_promedio():
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('''
+SELECT 
+    t.id,
+    (julianday(
+        MAX(substr(h.fecha, 7, 4) || '-' || substr(h.fecha, 4, 2) || '-' || substr(h.fecha, 1, 2))
+    ) - 
+    julianday(
+        substr(t.date_submitted, 7, 4) || '-' || substr(t.date_submitted, 4, 2) || '-' || substr(t.date_submitted, 1, 2)
+    )) * 24.0 AS horas_ultima_respuesta
+FROM 
+    tickets t
+JOIN 
+    historial h ON t.id = h.ticket_id
+WHERE 
+    h.comentario IS NOT NULL
+    AND t.status = 'Cerrado'
+GROUP BY 
+    t.id;
+    ''')
+    tiempos = c.fetchall()
+    conn.close()
+    if tiempos:
+        return round(np.mean([float(t[1]) for t in tiempos if t[1] is not None]), 2)
+    return None
+
 
 def agregar_comentario(ticket_id, usuario, comentario):
         conn = sqlite3.connect('helpdesk.db')
         c = conn.cursor()
-        fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+        fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
         c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
         conn.commit()
         conn.close()
@@ -239,7 +320,8 @@ if rol == "Usuario":
             "Tipo de ticket", 
             opciones_tipo,
             index=0,
-            key="selector_tipo_principal"
+            key="selector_tipo_principal",
+            help='Categoria a la cual se va a relacionar el ticket'
         )
         
         # Actualizar session_state
@@ -524,7 +606,7 @@ elif rol == "Soporte":
     stages = [
         {"id": "Abierto", "name": "Abierto", "color": "#FF5555"},
         {"id": "En progreso", "name": "En progreso", "color": "#FFD700"},
-        {"id": "Cerrado", "name": "Cerrado", "color": "#55FF55"}
+        {"id": "Cerrado", "name": "Cerrado", "color": "#55FF55"},
     ]
     df = st.session_state.df.copy()
     df_filtrado = df[df["asignado"] == usuario_actual]
@@ -541,7 +623,7 @@ elif rol == "Soporte":
             "underwriter": row["usuario"] or "",
             "currency": row["Priority"],
             "email": row["email"],
-            "source": "VV",
+            #"source": "VV",
             "type": row["tipo"],
             "custom_html": f"""
     <div style='display: flex; flex-direction: row; align-items: center; justify-content: space-between;'>
@@ -551,38 +633,88 @@ elif rol == "Soporte":
         <span style='background:#e0e0e0;border-radius:4px;padding:2px 6px;font-size:12px;margin-left:10px; color: black'>
             💻 {row["asignado"] if row["asignado"] else "No asignado"}
         </span>
+    </div>    
+    <div>
+        <p style='color: black; font-size: 12px; background-color: lightyellow; border-radius: 15px; text-align: center;'>Email: {row['email']}</p>
     </div>
     <div>
-        <p style='color: black; font-size: 12px; background-color: lightgray; border-radius: 15px; text-align: center;'>Email: {row['email']}</p>
+        <p style='color: black; font-size: 12px; background-color: lightgreen; border-radius: 15px; text-align: center;'>Proposito: {row['tipo']}</p>
     </div>
-    <div>
-        <p style='color: black; font-size: 12px; background-color: lightgray; border-radius: 15px; text-align: center;'>Proposito: {row['tipo']}</p>
+        <p style='color: black; font-size: 12px; background-color: lightblue; border-radius: 15px; text-align: center;'>Dias transcurridos: {calcular_dias_transcurridos(row["Date Submitted"])}</p>
     </div>
+
 
 """
         }
         for _, row in df_filtrado.iterrows()
     ]
+    permission_matrix = {
+        "Soporte": {
+            "stages": {
+                "Abierto": {
+                    "view": True,
+                    "drag_to": True,
+                    "drag_from": False,
+                    "approve": True,
+                    "reject": True,
+                    "edit": True
+                },
+                "En progreso": {
+                    "view": True,
+                    "drag_to": True,
+                    "drag_from": True,
+                    "approve": False,
+                    "reject": False,
+                    "edit": True
+                },
+                "Cerrado": {
+                    "view": True,
+                    "drag_to": True,
+                    "drag_from": False,
+                    "approve": False,
+                    "reject": False,
+                    "edit": False
+                }
+            },
+            "actions": {
+                "create_deal": True,
+                "delete_deal": False,
+                "edit_deal": True,
+                "approve_deal": True,
+                "reject_deal": True,
+                "request_info": True
+            },
+            "approval_limits": {
+                "VV": {"EUR": 100000},
+                "OF": {"EUR": 150000}
+            }
+        }
+    }
+
 
     user_info = {
-    "role": "riskManager",
-    "email": "risk@company.com",
-    "permissions": ["risk_approval", "management_approval"],
-    "approval_limits": {"VV": {"EUR": 100000}, "OF": {"EUR": 150000}},
-    "department": "Risk Management",
-    "is_active": True
-}
+        "role": "Soporte",
+        "email": "risk@company.com",
+        "permissions": ["risk_approval", "management_approval"],
+        "approval_limits": {"VV": {"EUR": 100000}, "OF": {"EUR": 150000}},
+        "department": "Risk Management",
+        "is_active": True
+    }
     result = kanban_board(
     stages=stages,
     deals=deals,
     user_info=user_info,
+    permission_matrix=permission_matrix,
+    show_tooltips=True,
     key="kanban_tickets"
 )
+
     selected_ticket_id = result.get("clicked_deal")
     if 'dialogo_cerrado' not in st.session_state:
         st.session_state.dialogo_cerrado = False 
     # Procesar cambios de estado
     if result and result.get("moved_deal"):
+        # Obtener detalles del ticket movido
         moved_id = result["moved_deal"]["deal_id"]
         # Buscar el deal original
         moved_deal_full = next((d for d in deals if d["deal_id"] == moved_id), None)
@@ -624,7 +756,7 @@ elif rol == "Soporte":
 
     if result and result.get("clicked_deal"):
         st.info(f"Ticket seleccionado: {result['clicked_deal']['deal_id']}")
-        with st.expander("Detalles del ticket"):
+        with st.expander("Detalles del ticket", icon='📋'):
             st.write("🆔 ID:", result["clicked_deal"]["id"])
             st.write("🏢 Sede:", result["clicked_deal"]["company_name"])
             st.write("📦 Tipo de producto:", result["clicked_deal"]["product_type"])
@@ -705,7 +837,7 @@ elif rol == "Soporte":
         else:
             st.info("Este ticket no tiene historial aún.")
         with st.form(f"form_comentario_{result['clicked_deal']['deal_id']}"):
-            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
+            usuario_hist = st.text_input("Usuario", value=usuario_actual, disabled=True)
             comentario = st.text_area("Agregar comentario o acción al historial")
             enviar_com = st.form_submit_button("Agregar comentario")
 
@@ -793,11 +925,13 @@ elif rol == "Soporte":
     st.header("Estadísticas")
     col1, col2, col3 = st.columns(3)
     num_open_tickets = len(df_filtrado[df_filtrado.Status == "Abierto"])
+    tiempo_primera_respuesta = obtener_tiempo_primera_respuesta()
+    tiempo_promedio = obtener_tiempo_promedio()
     col1.metric(label="Tickets abiertos", value=num_open_tickets, delta=10)
-    col2.metric(label="Tiempo primera respuesta (horas)", value=5.2, delta=-1.5)
-    col3.metric(label="Tiempo promedio de resolución (horas)", value=16, delta=2)
+    col2.metric(label="Tiempo primera respuesta (horas)", value=tiempo_primera_respuesta, delta=-1.5)
+    col3.metric(label="Tiempo promedio de resolución (horas)", value=tiempo_promedio, delta=2)
     st.write("")
-    st.write("##### Tickets por estado y mes")
+    # st.write("##### Tickets por estado y mes")
     status_plot = (
         alt.Chart(df_filtrado)
         .mark_bar()
@@ -898,7 +1032,7 @@ elif rol == "Admin":
             "product_type": row["Issue"] or "",
             "date": row["Date Submitted"],
             "underwriter": row["usuario"] or "",
-            "source": "OF",
+            #"source": "OF",
             "currency": row["Priority"],
             "email": row["email"],
             "type": row["tipo"],
@@ -912,10 +1046,13 @@ elif rol == "Admin":
         </span>
     </div>
     <div>
-        <p style='color: black; font-size: 12px; background-color: lightgray; border-radius: 15px; text-align: center;'>Email: {row['email']}</p>
+        <p style='color: black; font-size: 12px; background-color: lightyellow; border-radius: 15px; text-align: center;'>Email: {row['email']}</p>
     </div>
     <div>
-        <p style='color: black; font-size: 12px; background-color: lightgray; border-radius: 15px; text-align: center;'>Proposito: {row['tipo']}</p>
+        <p style='color: black; font-size: 12px; background-color: lightgreen; border-radius: 15px; text-align: center;'>Proposito: {row['tipo']}</p>
+    </div>
+    </div>
+        <p style='color: black; font-size: 12px; background-color: lightblue; border-radius: 15px; text-align: center;'>Dias transcurridos: {calcular_dias_transcurridos(row["Date Submitted"])}</p>
     </div>
 """
         }
@@ -1055,7 +1192,7 @@ elif rol == "Admin":
                     columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"]
                 )
                 st.rerun()
-        with st.expander("Detalles del ticket"):
+        with st.expander("Detalles del ticket", icon='📋'):
             st.write("🆔 ID:", result["clicked_deal"]["id"])
             st.write("🏢 Sede:", result["clicked_deal"]["company_name"])
             st.write("📦 Tipo de producto:", result["clicked_deal"]["product_type"])
@@ -1095,13 +1232,13 @@ elif rol == "Admin":
 
             nuevo_proposito = st.selectbox(
                 "Cambiar proposito",
-                options=propositos_lista,
-                index=index_actual,
+                options=["Seleccione"] + propositos_lista,
+                index=0,
                 key=f"cambiar_proposito_{ticket_id}"
             )
 
             # Solo procesar si el usuario realmente cambió la selección
-            if nuevo_proposito != proposito_actual:
+            if nuevo_proposito != "Seleccione":
                 # Buscar las categorías del tipo seleccionado
                 conn = sqlite3.connect('helpdesk.db')
                 c = conn.cursor()
@@ -1135,7 +1272,7 @@ elif rol == "Admin":
                             rows,
                             columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"]
                         )
-                        st.rerun()
+                        
                 else:
                     # Si no hay categorías, solo actualizar el propósito
                     conn = sqlite3.connect('helpdesk.db')
@@ -1231,7 +1368,7 @@ elif rol == "Admin":
             st.info("Este ticket no tiene historial aún.")
         # 🔽 Formulario único para agregar comentario
         with st.form(f"form_comentario_{result['clicked_deal']['deal_id']}"):
-            usuario_hist = st.text_input("Usuario (opcional)", value="Soporte")
+            usuario_hist = st.text_input("Usuario", value=usuario_actual, disabled=True)
             comentario = st.text_area("Agregar comentario o acción al historial")
             enviar_com = st.form_submit_button("Agregar comentario")
 
@@ -1286,11 +1423,13 @@ elif rol == "Admin":
     st.header("Estadísticas")
     col1, col2, col3 = st.columns(3)
     num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Abierto"])
+    tiempo_primera_respuesta = obtener_tiempo_primera_respuesta()
+    tiempo_promedio = obtener_tiempo_promedio()
     col1.metric(label="Tickets abiertos", value=num_open_tickets, delta=10)
-    col2.metric(label="Tiempo primera respuesta (horas)", value=5.2, delta=-1.5)
-    col3.metric(label="Tiempo promedio de resolución (horas)", value=16, delta=2)
+    col2.metric(label="Tiempo primera respuesta (horas)", value=tiempo_primera_respuesta, delta=-1.5)
+    col3.metric(label="Tiempo promedio de resolución (horas)", value=tiempo_promedio, delta=2)
     st.write("")
-    st.write("##### Tickets por estado y mes")
+    # st.write("##### Tickets por estado y mes")
     status_plot = (
         alt.Chart(df)
         .mark_bar()
@@ -1315,7 +1454,7 @@ elif rol == "Config":
     # st.sidebar.button("⚙️", key="config_avanzada")
     st.markdown("Funciones avanzadas")
     adv = st.text_input("Contraseña", type="password")
-    if adv == "test":
+    if adv == "alu.calidad":
         st.success("acceso concedido")
         st.title("🔐 Panel de administración")
         st.header("Propositos")
@@ -1359,7 +1498,7 @@ elif rol == "Config":
             conn.close()
             st.success("✅ Cambios guardados correctamente")
             st.rerun()
-        with st.expander("Agregar nuevo proposito"):
+        with st.expander("Agregar nuevo proposito", icon= '✨'):
             with st.form("form_tipo_problema"):
                 nuevo_tipo = st.text_input("Nuevo proposito")
                 descripcion_tipo = st.text_input("Categoria")
@@ -1408,7 +1547,7 @@ elif rol == "Config":
             st.toast("Cambios en usuarios guardados", icon="✅")
             time.sleep(2)
             st.rerun()
-        with st.expander("Agregar nuevo usuario"):
+        with st.expander("Agregar nuevo usuario", icon='👤'):
             with st.form("form_nuevo_usuario"):
                 nuevo_usuario = st.text_input("Nuevo usuario")
                 nueva_contraseña = st.text_input("Contraseña", type="password")
@@ -1429,7 +1568,7 @@ elif rol == "Config":
         st.header("Gestion de Sedes")
         df_sedes = pd.DataFrame(obtener_sedes_db(), columns=["nombre"])
         df_sedes_edit = st.data_editor(df_sedes, num_rows="dynamic")
-        with st.expander("Agregar sede"):
+        with st.expander("Agregar sede", icon='🏪'):
             with st.form("form_nueva_sede"):
                 nueva_sede = st.text_input("Nueva sede")
                 submit_sede = st.form_submit_button("Agregar sede")
@@ -1445,7 +1584,7 @@ elif rol == "Config":
             else:
                 st.warning("Debe llenar el campo")
         st.markdown("---")
-        with st.expander("Base de datos y consultas SQL"):
+        with st.expander("Base de datos y consultas SQL", icon='🖥️'):
             st.subheader("Base de datos interna (SQLite)")
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
@@ -1613,4 +1752,7 @@ if rol == 'Soporte' or rol == 'Admin':
     else:
         st.info("Selecciona un propósito para ver las categorías disponibles.")
 #------------------------------------------------------------Admin----------------------------------------------------------------------------------#
-
+st.markdown("---")
+st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. ©2025 V1.0.0..</p>
+     </div>
+ """, unsafe_allow_html=True)

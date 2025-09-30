@@ -654,7 +654,7 @@ elif rol == "Soporte":
                 "Abierto": {
                     "view": True,
                     "drag_to": True,
-                    "drag_from": False,
+                    "drag_from": True,
                     "approve": True,
                     "reject": True,
                     "edit": True

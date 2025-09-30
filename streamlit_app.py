@@ -14,6 +14,72 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 EMAILS_HABILITADOS = True
 fecha_actual = datetime.now().strftime("%d-%m-%Y %H:%M")
 
+# --- Persistencia de base de datos (SQLite) ---
+import os
+import shutil
+from pathlib import Path
+import re
+
+
+def asegurar_db_persistente():
+    """
+    Copia la base de datos del repositorio a una carpeta persistente en el host (si no existe).
+    Retorna la ruta final del archivo .db a utilizar.
+    """
+    # Directorio persistente configurable por variable de entorno
+    base_dir = os.environ.get("STREAMLIT_PERSIST_DIR", None)
+    if base_dir:
+        data_dir = Path(base_dir)
+    else:
+        # Fallback al HOME del usuario
+        data_dir = Path.home() / ".streamlit" / "data" / "helpdesk"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    target_db = data_dir / "helpdesk.db"
+    repo_dir = Path(__file__).resolve().parent
+    repo_db = repo_dir / "helpdesk.db"
+    repo_sql = repo_dir / "helpdesk.db.sql"
+
+    if not target_db.exists():
+        # 1) Copiar archivo .db si existe en el repo
+        if repo_db.exists():
+            shutil.copy2(repo_db, target_db)
+        # 2) O, inicializar desde el dump SQL si existe
+        elif repo_sql.exists():
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(str(target_db))
+            with open(repo_sql, "r", encoding="utf-8") as f:
+                sql_text = f.read()
+            # Asegurar que las tablas se creen solo si no existen
+            sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
+            conn.executescript(sql_text)
+            conn.commit()
+            conn.close()
+    return str(target_db)
+
+
+PERSISTENT_DB_PATH = asegurar_db_persistente()
+
+
+def obtener_conexion_db():
+    """
+    Retorna una nueva conexión SQLite apuntando a la base de datos persistente.
+    """
+    import sqlite3 as _sqlite3
+    return _sqlite3.connect(PERSISTENT_DB_PATH, check_same_thread=False)
+
+
+# Parchear sqlite3.connect para que toda la app use la ruta persistente,
+# sin necesidad de modificar cada llamada existente.
+import sqlite3 as _sqlite3_global
+_original_sqlite3_connect = _sqlite3_global.connect
+
+def _connect_persistente(*args, **kwargs):
+    kwargs.setdefault("check_same_thread", False)
+    return _original_sqlite3_connect(PERSISTENT_DB_PATH, **kwargs)
+
+_sqlite3_global.connect = _connect_persistente
+
 
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral
@@ -1577,7 +1643,7 @@ elif rol == "Config":
                 c = conn.cursor()
                 c.execute('INSERT INTO sedes (username) VALUES (?)', (nueva_sede))
                 conn.commit()
-                coon.close()
+                conn.close()
                 st.toast("Nueva sede agregada", icon="✅")
                 time.sleep(2)
                 st.rerun

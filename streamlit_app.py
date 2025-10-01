@@ -1607,7 +1607,7 @@ elif rol == "Config":
                     UPDATE usuarios
                     SET password = ?, rol = ?
                     WHERE username = ?
-                """, (row["contraseña"], row["rol"], row["usuario"]))
+                """, (row["password"], row["rol"], row["username"]))
             conn.commit()
             conn.close()
             st.toast("Cambios en usuarios guardados", icon="✅")

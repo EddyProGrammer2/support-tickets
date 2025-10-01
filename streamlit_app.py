@@ -1605,9 +1605,9 @@ elif rol == "Config":
             for _, row in df_usuarios_edit.iterrows():
                 c.execute("""
                     UPDATE usuarios
-                    SET password = ?, rol = ?
-                    WHERE username = ?
-                """, (row["password"], row["rol"], row["username"]))
+                    SET password = ?, rol = ?, username = ?
+                    WHERE id = ?
+                """, (row["password"], row["rol"], row["username"], row["id"]))
             conn.commit()
             conn.close()
             st.toast("Cambios en usuarios guardados", icon="✅")

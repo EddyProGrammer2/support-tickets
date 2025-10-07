@@ -329,7 +329,7 @@ def agregar_ticket_db(issue, priority, usuario, sede, tipo, email):
     else:
         last_num = 1000
     new_id = f"TICKET-{last_num+1}"
-    today = datetime.datetime.now().strftime("%d-%m-%Y")
+    today = datetime.now().strftime("%d-%m-%Y")
     c.execute('INSERT INTO tickets (id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (new_id, issue, "Abierto", priority, today, usuario, sede, tipo, "", email))
     conn.commit()
     conn.close()
@@ -447,7 +447,7 @@ if rol == "Usuario":
                     nombre_archivo = archivo_usuario.name
                     tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo_usuario.type or "application/octet-stream"
                     contenido = archivo_usuario.getbuffer().tobytes()
-                    fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+                    fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
                     usuario_adj = usuario or "Usuario"
                     # Guardar en base de datos
                     conn = sqlite3.connect('helpdesk.db')
@@ -934,7 +934,7 @@ elif rol == "Soporte":
             nombre_archivo = archivo.name
             tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo.type or "application/octet-stream"
             contenido = archivo.getbuffer().tobytes()
-            fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+            fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
             usuario_adj = "Admin"
             # Guardar en base de datos SOLO si NO EXISTE
             conn = sqlite3.connect('helpdesk.db')
@@ -1465,7 +1465,7 @@ elif rol == "Admin":
             nombre_archivo = archivo.name
             tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo.type or "application/octet-stream"
             contenido = archivo.getbuffer().tobytes()
-            fecha = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+            fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
             usuario_adj = "Admin"
             # Guardar en base de datos SOLO si NO EXISTE
             conn = sqlite3.connect('helpdesk.db')

@@ -1,5 +1,4 @@
-import datetime 
-import timedelta
+from datetime import datetime, timedelta
 import random
 import sqlite3
 import logging

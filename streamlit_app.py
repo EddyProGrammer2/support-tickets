@@ -1679,7 +1679,8 @@ elif rol == "Config":
                         # Para múltiples sentencias SQL (INSERT, UPDATE, DELETE, CREATE, etc.)
                         cursor.executescript(sql)
                         conn.commit()
-                        st.success("Consulta(s) ejecutada(s) exitosamente.")
+                        filas_afectadas = cursor.rowcount
+                        st.success(f"Consulta(s) ejecutada(s) exitosamente."Filas afectadas: {filas_afectadas}")
             
                     conn.close()
             

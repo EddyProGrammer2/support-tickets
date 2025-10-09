@@ -1664,29 +1664,28 @@ elif rol == "Config":
             sql = st.text_area("Consulta SQL", height=100)
             if st.button("Ejecutar"):
                 try:
-                        conn = sqlite3.connect('helpdesk.db')
-                        
-                        # Detectar el tipo de consulta
-                        sql_upper = sql.strip().upper()
-                        
-                        if sql_upper.startswith('SELECT'):
-                            # Para consultas SELECT que devuelven resultados
-                            df = pd.read_sql_query(sql, conn)
-                            st.write("Resultados:")
-                            st.dataframe(df)
-                            st.write(f"Filas encontradas: {len(df)}")
-                        else:
-                            # Para consultas INSERT, UPDATE, DELETE, etc.
-                            cursor = conn.cursor()
-                            cursor.execute(sql)
-                            conn.commit()
-                            filas_afectadas = cursor.rowcount
-                            st.success(f"Consulta ejecutada exitosamente. Filas afectadas: {filas_afectadas}")
-                        
-                        conn.close()
-                        
+                    conn = sqlite3.connect('helpdesk.db')
+                    cursor = conn.cursor()
+            
+                    sql_upper = sql.strip().upper()
+            
+                    if sql_upper.startswith('SELECT'):
+                        # Para consultas SELECT que devuelven resultados
+                        df = pd.read_sql_query(sql, conn)
+                        st.write("Resultados:")
+                        st.dataframe(df)
+                        st.write(f"Filas encontradas: {len(df)}")
+                    else:
+                        # Para múltiples sentencias SQL (INSERT, UPDATE, DELETE, CREATE, etc.)
+                        cursor.executescript(sql)
+                        conn.commit()
+                        st.success("Consulta(s) ejecutada(s) exitosamente.")
+            
+                    conn.close()
+            
                 except Exception as e:
                     st.error(f"Error al ejecutar la consulta: {e}")
+
         # Descargar archivo db
         if st.button("Descargar base de datos"):
             with open("helpdesk_backup.db", "rb") as f:

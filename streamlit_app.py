@@ -26,57 +26,24 @@ DB_FILENAME = 'helpdesk.db'
 DB_DATA_PATH = 'data/helpdesk.db'
 DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
 
+# --- CONEXIÓN A BASE DE DATOS LOCAL MEJORADA ---
+DB_FILENAME = 'helpdesk.db'
+DB_DATA_PATH = 'data/helpdesk.db'
+DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
+
 def get_db_connection(*args, **kwargs):
-    """Conexión robusta a la base de datos - versión compatible con sqlite3.connect"""
+    """Conexión robusta a la base de datos - versión simplificada"""
     
     os.makedirs('data', exist_ok=True)
     
-    # Usar un archivo de lock simple
-    lock_file = 'data/db.lock'
-    max_retries = 3
-    retry_delay = 1
+    # SOLO crear la base de datos si no existe, NUNCA actualizar desde original
+    if not os.path.exists(DB_DATA_PATH):
+        _create_initial_db_if_needed()
     
-    for attempt in range(max_retries):
-        try:
-            # Intentar crear un archivo de lock
-            with open(lock_file, 'x') as f:
-                f.write(str(os.getpid()))
-            
-            # SOLO crear la base de datos si no existe, NUNCA actualizar desde original
-            if not os.path.exists(DB_DATA_PATH):
-                _create_initial_db_if_needed()
-            
-            # Conectar con los mismos parámetros que sqlite3.connect
-            conn = sqlite3.connect(DB_DATA_PATH, check_same_thread=False, timeout=10)
-            
-            # Liberar lock
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-            
-            return conn
-            
-        except FileExistsError:
-            # Lock existe, esperar y reintentar
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            else:
-                logger.error("No se pudo acceder a la base de datos (timeout)")
-                # Fallback: conexión normal sin lock
-                return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
-        except Exception as e:
-            # Liberar lock en caso de error
-            if os.path.exists(lock_file):
-                try:
-                    os.remove(lock_file)
-                except:
-                    pass
-            logger.error(f"Error de conexión: {str(e)}")
-            # Fallback: conexión normal
-            return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
-    
-    # Último fallback
-    return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
+    # Conectar directamente sin locks complejos
+    # SQLite ya maneja locks internamente para operaciones concurrentes
+    conn = sqlite3.connect(DB_DATA_PATH, check_same_thread=False, timeout=30)
+    return conn
 
 def _create_initial_db_if_needed():
     """Crear base de datos inicial solo si no existe"""
@@ -91,24 +58,28 @@ def _create_initial_db_if_needed():
                 conn = sqlite3.connect(DB_DATA_PATH)
                 conn.close()
                 logger.info("Base de datos local creada (estructura básica)")
-            
+                
     except Exception as e:
         logger.error(f"Error al crear base de datos: {str(e)}")
+        # En caso de error, intentar conexión directa como fallback
         raise
 
-# --- PARCHE MÁGICO: Todas las llamadas a sqlite3.connect usarán nuestra función ---
+# --- PARCHE: Todas las llamadas a sqlite3.connect usarán nuestra función ---
 import sqlite3 as _sqlite3_global
 _original_sqlite3_connect = _sqlite3_global.connect
 
 def _patched_sqlite3_connect(*args, **kwargs):
     """
-    Intercepta TODAS las llamadas a sqlite3.connect en cualquier parte del código
-    y las redirige a nuestra función mejorada
+    Intercepta TODAS las llamadas a sqlite3.connect
     """
-    # Ignorar argumentos (database, timeout, etc.) y siempre usar nuestra DB persistente
-    return get_db_connection()
+    # Si la llamada es para 'helpdesk.db', usar nuestra versión persistente
+    if len(args) > 0 and args[0] == 'helpdesk.db':
+        return get_db_connection()
+    else:
+        # Para otras bases de datos, usar conexión normal
+        return _original_sqlite3_connect(*args, **kwargs)
 
-# Aplicar el parche una vez al inicio
+# Aplicar el parche
 _sqlite3_global.connect = _patched_sqlite3_connect
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral

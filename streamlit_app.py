@@ -26,8 +26,8 @@ DB_FILENAME = 'helpdesk.db'
 DB_DATA_PATH = 'data/helpdesk.db'
 DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
 
-def get_db_connection():
-    """Conexión robusta a la base de datos SIN actualizar desde original"""
+def get_db_connection(*args, **kwargs):
+    """Conexión robusta a la base de datos - versión compatible con sqlite3.connect"""
     
     os.makedirs('data', exist_ok=True)
     
@@ -46,9 +46,8 @@ def get_db_connection():
             if not os.path.exists(DB_DATA_PATH):
                 _create_initial_db_if_needed()
             
-            # Conectar
-            conn = sqlite3.connect(DB_DATA_PATH, timeout=10, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
+            # Conectar con los mismos parámetros que sqlite3.connect
+            conn = sqlite3.connect(DB_DATA_PATH, check_same_thread=False, timeout=10)
             
             # Liberar lock
             if os.path.exists(lock_file):
@@ -62,8 +61,9 @@ def get_db_connection():
                 time.sleep(retry_delay)
                 continue
             else:
-                st.error("No se pudo acceder a la base de datos (timeout)")
-                return None
+                logger.error("No se pudo acceder a la base de datos (timeout)")
+                # Fallback: conexión normal sin lock
+                return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
         except Exception as e:
             # Liberar lock en caso de error
             if os.path.exists(lock_file):
@@ -71,10 +71,12 @@ def get_db_connection():
                     os.remove(lock_file)
                 except:
                     pass
-            st.error(f"Error de conexión: {str(e)}")
-            return None
+            logger.error(f"Error de conexión: {str(e)}")
+            # Fallback: conexión normal
+            return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
     
-    return None
+    # Último fallback
+    return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
 
 def _create_initial_db_if_needed():
     """Crear base de datos inicial solo si no existe"""
@@ -83,18 +85,31 @@ def _create_initial_db_if_needed():
             # Primero intentar copiar desde el original si existe
             if os.path.exists(DB_ORIG_PATH):
                 shutil.copy2(DB_ORIG_PATH, DB_DATA_PATH)
-                st.sidebar.success("✅ Base de datos inicial copiada desde original")
+                logger.info("✅ Base de datos inicial copiada desde original")
             else:
                 # Si no existe original, crear estructura básica
                 conn = sqlite3.connect(DB_DATA_PATH)
-                # Aquí puedes agregar la creación de tablas si es necesario
                 conn.close()
-                st.sidebar.info("Base de datos local creada (estructura básica)")
+                logger.info("Base de datos local creada (estructura básica)")
             
     except Exception as e:
-        st.error(f"Error al crear base de datos: {str(e)}")
+        logger.error(f"Error al crear base de datos: {str(e)}")
         raise
 
+# --- PARCHE MÁGICO: Todas las llamadas a sqlite3.connect usarán nuestra función ---
+import sqlite3 as _sqlite3_global
+_original_sqlite3_connect = _sqlite3_global.connect
+
+def _patched_sqlite3_connect(*args, **kwargs):
+    """
+    Intercepta TODAS las llamadas a sqlite3.connect en cualquier parte del código
+    y las redirige a nuestra función mejorada
+    """
+    # Ignorar argumentos (database, timeout, etc.) y siempre usar nuestra DB persistente
+    return get_db_connection()
+
+# Aplicar el parche una vez al inicio
+_sqlite3_global.connect = _patched_sqlite3_connect
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral
 def calcular_dias_transcurridos(fecha_creacion):

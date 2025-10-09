@@ -21,65 +21,95 @@ from pathlib import Path
 import re
 
 
-def asegurar_db_persistente():
-    """
-    Copia la base de datos del repositorio a una carpeta persistente en el host (si no existe).
-    Retorna la ruta final del archivo .db a utilizar.
-    """
-    # Directorio persistente configurable por variable de entorno
-    base_dir = os.environ.get("STREAMLIT_PERSIST_DIR", None)
-    if base_dir:
-        data_dir = Path(base_dir)
-    else:
-        # Fallback al HOME del usuario
-        data_dir = Path.home() / ".streamlit" / "data" / "helpdesk"
-    data_dir.mkdir(parents=True, exist_ok=True)
+# --- CONEXIÓN A BASE DE DATOS LOCAL MEJORADA ---
+DB_FILENAME = 'helpdesk.db'
+DB_DATA_PATH = 'data/helpdesk.db'
+DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
 
-    target_db = data_dir / "helpdesk.db"
-    repo_dir = Path(__file__).resolve().parent
-    repo_db = repo_dir / "helpdesk.db"
-    repo_sql = repo_dir / "helpdesk.db.sql"
+def get_db_connection(*args, **kwargs):
+    """Conexión robusta a la base de datos - versión compatible con sqlite3.connect"""
+    
+    os.makedirs('data', exist_ok=True)
+    
+    # Usar un archivo de lock simple
+    lock_file = 'data/db.lock'
+    max_retries = 3
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            # Intentar crear un archivo de lock
+            with open(lock_file, 'x') as f:
+                f.write(str(os.getpid()))
+            
+            # SOLO crear la base de datos si no existe, NUNCA actualizar desde original
+            if not os.path.exists(DB_DATA_PATH):
+                _create_initial_db_if_needed()
+            
+            # Conectar con los mismos parámetros que sqlite3.connect
+            conn = sqlite3.connect(DB_DATA_PATH, check_same_thread=False, timeout=10)
+            
+            # Liberar lock
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+            
+            return conn
+            
+        except FileExistsError:
+            # Lock existe, esperar y reintentar
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error("No se pudo acceder a la base de datos (timeout)")
+                # Fallback: conexión normal sin lock
+                return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
+        except Exception as e:
+            # Liberar lock en caso de error
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                except:
+                    pass
+            logger.error(f"Error de conexión: {str(e)}")
+            # Fallback: conexión normal
+            return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
+    
+    # Último fallback
+    return sqlite3.connect(DB_DATA_PATH, check_same_thread=False)
 
-    if not target_db.exists():
-        # 1) Copiar archivo .db si existe en el repo
-        if repo_db.exists():
-            shutil.copy2(repo_db, target_db)
-        # 2) O, inicializar desde el dump SQL si existe
-        elif repo_sql.exists():
-            import sqlite3 as _sqlite3
-            conn = _sqlite3.connect(str(target_db))
-            with open(repo_sql, "r", encoding="utf-8") as f:
-                sql_text = f.read()
-            # Asegurar que las tablas se creen solo si no existen
-            sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
-            conn.executescript(sql_text)
-            conn.commit()
-            conn.close()
-    return str(target_db)
+def _create_initial_db_if_needed():
+    """Crear base de datos inicial solo si no existe"""
+    try:
+        if not os.path.exists(DB_DATA_PATH):
+            # Primero intentar copiar desde el original si existe
+            if os.path.exists(DB_ORIG_PATH):
+                shutil.copy2(DB_ORIG_PATH, DB_DATA_PATH)
+                logger.info("✅ Base de datos inicial copiada desde original")
+            else:
+                # Si no existe original, crear estructura básica
+                conn = sqlite3.connect(DB_DATA_PATH)
+                conn.close()
+                logger.info("Base de datos local creada (estructura básica)")
+            
+    except Exception as e:
+        logger.error(f"Error al crear base de datos: {str(e)}")
+        raise
 
-
-PERSISTENT_DB_PATH = asegurar_db_persistente()
-
-
-def obtener_conexion_db():
-    """
-    Retorna una nueva conexión SQLite apuntando a la base de datos persistente.
-    """
-    import sqlite3 as _sqlite3
-    return _sqlite3.connect(PERSISTENT_DB_PATH, check_same_thread=False)
-
-
-# Parchear sqlite3.connect para que toda la app use la ruta persistente,
-# sin necesidad de modificar cada llamada existente.
+# --- PARCHE MÁGICO: Todas las llamadas a sqlite3.connect usarán nuestra función ---
 import sqlite3 as _sqlite3_global
 _original_sqlite3_connect = _sqlite3_global.connect
 
-def _connect_persistente(*args, **kwargs):
-    kwargs.setdefault("check_same_thread", False)
-    return _original_sqlite3_connect(PERSISTENT_DB_PATH, **kwargs)
+def _patched_sqlite3_connect(*args, **kwargs):
+    """
+    Intercepta TODAS las llamadas a sqlite3.connect en cualquier parte del código
+    y las redirige a nuestra función mejorada
+    """
+    # Ignorar argumentos (database, timeout, etc.) y siempre usar nuestra DB persistente
+    return get_db_connection()
 
-_sqlite3_global.connect = _connect_persistente
-
+# Aplicar el parche una vez al inicio
+_sqlite3_global.connect = _patched_sqlite3_connect
 
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral

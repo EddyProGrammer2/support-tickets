@@ -1680,7 +1680,7 @@ elif rol == "Config":
                         cursor.executescript(sql)
                         conn.commit()
                         filas_afectadas = cursor.rowcount
-                        st.success(f"Consulta(s) ejecutada(s) exitosamente."Filas afectadas: {filas_afectadas}")
+                        st.success(f"Consulta(s) ejecutada(s) exitosamente. Filas afectadas: {filas_afectadas}")
             
                     conn.close()
             

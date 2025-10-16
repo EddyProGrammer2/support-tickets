@@ -311,6 +311,15 @@ def obtener_tipos_db():
     conn.close()
     return [row[0] for row in rows]
 
+def obtener_historial(ticket_id):
+    """Obtiene el historial (fecha, usuario, comentario) de un ticket."""
+    conn = sqlite3.connect('helpdesk.db')
+    c = conn.cursor()
+    c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
 def obtener_cat_por_tipo(tipo):
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
@@ -461,18 +470,30 @@ if rol == "Usuario":
                     st.success(f"Archivo '{archivo_usuario.name}' adjuntado al ticket.")
                 # Notificación por email a soporte
                 try:
+                    # Enviar al admin
                     send_email_gmail(
                         subject=f"Nuevo ticket creado: {new_ticket[0]}",
                         body=f"Se ha creado un nuevo ticket:\n\nID: {new_ticket[0]}\nUsuario: {usuario}\nSede: {sede}\nTipo: {tipo_categoria}\nPrioridad: {priority}\nDescripción: {issue}",
                         to_email=EMAIL_DESTINO_SOPORTE
                     )
                 except Exception as e:
-                    st.warning(f"No se pudo enviar el email de notificación: {e}")
+                    st.warning(f"No se pudo enviar el email de notificación al admin: {e}")
+                try:
+                    # Enviar copia al creador del ticket si su email parece válido
+                    if isinstance(email, str) and '@' in email:
+                        send_email_gmail(
+                            subject=f"Confirmación de ticket creado: {new_ticket[0]}",
+                            body=f"Su ticket ha sido creado correctamente:\n\nID: {new_ticket[0]}\nAsunto: {issue}\nEstado: Abierto\nPrioridad: {priority}\nSede: {sede}\nTipo: {tipo_categoria}\n\nGracias por contactarnos. El equipo de soporte lo contactará pronto.",
+                            to_email=email
+                        )
+                except Exception as e:
+                    st.warning(f"No se pudo enviar el email de confirmación al creador: {e}")
                 # Recargar los tickets desde la base de datos
                 rows = obtener_tickets_db()
                 st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             else:
                 st.warning("Debe llenar todos los campos obligatorios.")
+        # (Se eliminó la sección de consulta de tickets por pedido del cliente)
     # with tab2:
     #     st.header("Tickets enviados")
         

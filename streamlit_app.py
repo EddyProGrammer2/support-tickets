@@ -827,12 +827,49 @@ elif rol == "Soporte":
             rows = obtener_tickets_db()
             st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             try:
-                send_email_gmail(
-                    subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
-                    body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                    to_email=email_moved)
+                # Obtener info del ticket
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('SELECT issue, priority, email FROM tickets WHERE id = ?', (moved_id,))
+                trow = c.fetchone()
+                conn.close()
+                issue = trow[0] if trow else ''
+                priority = trow[1] if trow else ''
+                ticket_email = trow[2] if trow else email_moved
+
+                subject = f"Cambio de estado: {moved_id} → {nuevo_estado}"
+                body = f"Su ticket ha cambiado de estado:\n\nID: {moved_id}\nAsunto: {issue}\nPrioridad: {priority}\nNuevo estado: {nuevo_estado}\n\n"
+
+                # Si se cierra, adjuntar el último comentario de cierre si existe
+                if nuevo_estado.lower() == 'cerrado':
+                    try:
+                        conn = sqlite3.connect('helpdesk.db')
+                        c = conn.cursor()
+                        c.execute('SELECT comentario, usuario, fecha FROM historial WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', (moved_id,))
+                        last = c.fetchone()
+                        conn.close()
+                        if last and last[0]:
+                            comentario_cierre = last[0]
+                            usuario_cierre = last[1] or 'Soporte'
+                            fecha_cierre = last[2] or ''
+                            body += f"Comentario de cierre ({fecha_cierre}) por {usuario_cierre}:\n{comentario_cierre}\n\n"
+                    except Exception:
+                        pass
+
+                # Enviar al creador si tiene email
+                if ticket_email and '@' in ticket_email:
+                    send_email_gmail(subject=subject, body=body, to_email=ticket_email)
+
+                # Si el cambio fue hecho por soporte (estamos en la sección Soporte), enviar copia al admin
+                try:
+                    # Asumimos usuario_actual es el soporte que está logueado
+                    if 'user_soporte' in st.session_state and st.session_state.user_soporte:
+                        send_email_gmail(subject=subject, body=f"[COPIA_SOPORTE]\n{body}", to_email=EMAIL_DESTINO_SOPORTE)
+                except Exception:
+                    pass
+
                 logger.info(f"Email de notificación enviado para ticket {moved_id}")
-                st.success(f"✅ Email enviado correctamente a {email_moved}")
+                st.success(f"✅ Email enviado correctamente a {ticket_email}")
             except Exception as e:
                 st.warning(f"No se pudo enviar el email de notificación: {e}")
         # Recargar los tickets desde la base de datos para reflejar el cambio
@@ -931,14 +968,46 @@ elif rol == "Soporte":
         if enviar_com and comentario.strip():
             agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
             st.success("Comentario agregado.")
+            # Notificar al creador del ticket y al admin si el comentario lo realizó soporte
             try:
-                send_email_gmail(
-                    subject=f"Nuevo comentario en el ticket {result['clicked_deal']['deal_id']}",
-                    body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
-                    to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
-                )
+                ticket_id = result['clicked_deal']['deal_id']
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('SELECT email, status, issue FROM tickets WHERE id = ?', (ticket_id,))
+                ticket_row = c.fetchone()
+                conn.close()
+                ticket_email = ticket_row[0] if ticket_row else None
+                ticket_status = ticket_row[1] if ticket_row else ''
+                ticket_issue = ticket_row[2] if ticket_row else ''
+
+                subject = f"Actualización ticket {ticket_id}: {ticket_status}"
+                body = f"Se ha agregado un nuevo comentario al ticket {ticket_id}:\n\nAsunto: {ticket_issue}\nEstado: {ticket_status}\nUsuario que comenta: {usuario_hist}\n\nComentario:\n{comentario}\n"
+
+                # Enviar al creador si tiene email
+                if ticket_email and '@' in ticket_email:
+                    send_email_gmail(subject=subject, body=body, to_email=ticket_email)
+
+                # Si este bloque es ejecutado desde Soporte (usuario_hist es usuario de soporte), notificar también al admin
+                # Aquí asumimos que estamos en la sección Soporte porque "usuario_actual" estaba seteado arriba; en esa sección
+                # usuario_hist es el usuario de soporte. Para evitar enviar doble notificación desde Admin, solo enviar admin si
+                # el comentarista no es admin (simple heurística: buscar el rol en la tabla usuarios)
+                try:
+                    # comprobar rol del usuario que comentó
+                    conn = sqlite3.connect('helpdesk.db')
+                    c = conn.cursor()
+                    c.execute('SELECT rol FROM usuarios WHERE username = ? OR nombre = ?', (usuario_hist, usuario_hist))
+                    rol_row = c.fetchone()
+                    conn.close()
+                    rol_comentador = rol_row[0] if rol_row else None
+                except Exception:
+                    rol_comentador = None
+
+                if rol_comentador and rol_comentador.lower() == 'soporte':
+                    # enviar copia al admin
+                    send_email_gmail(subject=subject, body=body, to_email=EMAIL_DESTINO_SOPORTE)
+
             except Exception as e:
-                st.warning(f"No se pudo enviar el email de notificación: {e}")
+                st.warning(f"No se pudo enviar notificaciones por email tras agregar comentario: {e}")
             st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario
@@ -1198,12 +1267,48 @@ elif rol == "Admin":
             rows = obtener_tickets_db()
             st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             try:
-                send_email_gmail(
-                    subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
-                    body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                    to_email=email_moved)
+                # Obtener info del ticket
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('SELECT issue, priority, email FROM tickets WHERE id = ?', (moved_id,))
+                trow = c.fetchone()
+                conn.close()
+                issue = trow[0] if trow else ''
+                priority = trow[1] if trow else ''
+                ticket_email = trow[2] if trow else email_moved
+
+                subject = f"Cambio de estado: {moved_id} → {nuevo_estado}"
+                body = f"Su ticket ha cambiado de estado:\n\nID: {moved_id}\nAsunto: {issue}\nPrioridad: {priority}\nNuevo estado: {nuevo_estado}\n\n"
+
+                if nuevo_estado.lower() == 'cerrado':
+                    try:
+                        conn = sqlite3.connect('helpdesk.db')
+                        c = conn.cursor()
+                        c.execute('SELECT comentario, usuario, fecha FROM historial WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', (moved_id,))
+                        last = c.fetchone()
+                        conn.close()
+                        if last and last[0]:
+                            comentario_cierre = last[0]
+                            usuario_cierre = last[1] or 'Soporte'
+                            fecha_cierre = last[2] or ''
+                            body += f"Comentario de cierre ({fecha_cierre}) por {usuario_cierre}:\n{comentario_cierre}\n\n"
+                    except Exception:
+                        pass
+
+                # Enviar al creador si tiene email
+                if ticket_email and '@' in ticket_email:
+                    send_email_gmail(subject=subject, body=body, to_email=ticket_email)
+
+                # Si fue cerrado por soporte (comprobación conservadora), también enviar al admin
+                try:
+                    if 'user_admin' in st.session_state and st.session_state.user_admin:
+                        # Si admin cambió el estado, seguir enviando copia a admin no es necesario; pero si lo cerró soporte, admin debe recibir copia.
+                        send_email_gmail(subject=subject, body=f"[COPIA_ADMIN]\n{body}", to_email=EMAIL_DESTINO_SOPORTE)
+                except Exception:
+                    pass
+
                 logger.info(f"Email de notificación enviado para ticket {moved_id}")
-                st.success(f"✅ Email enviado correctamente a {email_moved}")
+                st.success(f"✅ Email enviado correctamente a {ticket_email}")
             except Exception as e:
                 st.warning(f"No se pudo enviar el email de notificación: {e}")
 
@@ -1462,14 +1567,41 @@ elif rol == "Admin":
         if enviar_com and comentario.strip():
             agregar_comentario(result['clicked_deal']['deal_id'], usuario_hist, comentario.strip())
             st.success("Comentario agregado.")
+            # Notificar al creador del ticket y al admin si el comentario lo realizó soporte
             try:
-                send_email_gmail(
-                    subject=f"Nuevo comentario en el ticket {result['clicked_deal']['deal_id']}",
-                    body=f"Se ha agregado un nuevo comentario al ticket {result['clicked_deal']['deal_id']}:\n\n{comentario}",
-                    to_email=EMAIL_DESTINO_SOPORTE             #result['clicked_deal'].get("email", "No disponible")
-                )
+                ticket_id = result['clicked_deal']['deal_id']
+                conn = sqlite3.connect('helpdesk.db')
+                c = conn.cursor()
+                c.execute('SELECT email, status, issue FROM tickets WHERE id = ?', (ticket_id,))
+                ticket_row = c.fetchone()
+                conn.close()
+                ticket_email = ticket_row[0] if ticket_row else None
+                ticket_status = ticket_row[1] if ticket_row else ''
+                ticket_issue = ticket_row[2] if ticket_row else ''
+
+                subject = f"Actualización ticket {ticket_id}: {ticket_status}"
+                body = f"Se ha agregado un nuevo comentario al ticket {ticket_id}:\n\nAsunto: {ticket_issue}\nEstado: {ticket_status}\nUsuario que comenta: {usuario_hist}\n\nComentario:\n{comentario}\n"
+
+                # Enviar al creador si tiene email
+                if ticket_email and '@' in ticket_email:
+                    send_email_gmail(subject=subject, body=body, to_email=ticket_email)
+
+                # Comprobar rol del comentarista y si es soporte, notificar al admin
+                try:
+                    conn = sqlite3.connect('helpdesk.db')
+                    c = conn.cursor()
+                    c.execute('SELECT rol FROM usuarios WHERE username = ? OR nombre = ?', (usuario_hist, usuario_hist))
+                    rol_row = c.fetchone()
+                    conn.close()
+                    rol_comentador = rol_row[0] if rol_row else None
+                except Exception:
+                    rol_comentador = None
+
+                if rol_comentador and rol_comentador.lower() == 'soporte':
+                    send_email_gmail(subject=subject, body=body, to_email=EMAIL_DESTINO_SOPORTE)
+
             except Exception as e:
-                st.warning(f"No se pudo enviar el email de notificación: {e}")
+                st.warning(f"No se pudo enviar notificaciones por email tras agregar comentario: {e}")
             st.rerun()
 
         # 🔽 Mostrar el uploader de archivo después del formulario

@@ -1594,7 +1594,7 @@ elif rol == "Admin":
     st.markdown(f"**Filtros activos:** {fecha_badge_admin} · {antig_badge_admin} · Tickets: **{len(df)}**")
 
     # Expander con tabla detallada y AgGrid interactiva (Admin)
-    with st.expander("Vista detallada (tabla) - Admin", expanded=False):
+    with st.expander("Vista detallada (tabla)", expanded=False):
         st.write(f"Mostrando {len(df)} tickets filtrados")
         cols_a = list(df.columns)
         cols_sel_a = st.multiselect("Columnas a mostrar/ exportar", options=cols_a, default=cols_a, key='cols_sel_admin')
@@ -2409,6 +2409,6 @@ if rol == 'Soporte' or rol == 'Admin':
         st.info("Selecciona un propósito para ver las categorías disponibles.")
 #------------------------------------------------------------Admin----------------------------------------------------------------------------------#
 st.markdown("---")
-st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. @""" + str(datetime.now().year) + """ V1.0.0..</p>
+st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. @""" + str(datetime.now().year) + """ V3.0.0.</p>
      </div>
  """, unsafe_allow_html=True)

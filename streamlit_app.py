@@ -177,15 +177,23 @@ def _patched_sqlite3_connect(*args, **kwargs):
     elif 'database' in kwargs:
         db_arg = kwargs.get('database')
 
+    # If caller already passed the persistent path, call original to avoid recursion
+    try:
+        if isinstance(db_arg, str) and os.path.abspath(db_arg) == os.path.abspath(DB_DATA_PATH):
+            return _original_sqlite3_connect(*args, **kwargs)
+    except Exception:
+        pass
+
+    # If caller asked for the repository DB filename (e.g. 'helpdesk.db'), remap it
     if isinstance(db_arg, str) and (os.path.basename(db_arg) == DB_FILENAME or db_arg == DB_FILENAME):
         # Replace with persistent path and preserve other args/kwargs
-        # Build new args list
         new_args = list(args)
         if len(new_args) > 0:
             new_args[0] = DB_DATA_PATH
+            return get_db_connection(*new_args, **kwargs)
         else:
             kwargs['database'] = DB_DATA_PATH
-        return get_db_connection(*new_args, **kwargs)
+            return get_db_connection(**kwargs)
 
     # For any other DB, call original connect
     return _original_sqlite3_connect(*args, **kwargs)

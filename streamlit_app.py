@@ -19,186 +19,67 @@ import os
 import shutil
 from pathlib import Path
 import re
-import hashlib
 
-# File names and paths
+
+# --- CONEXIÓN A BASE DE DATOS LOCAL MEJORADA ---
 DB_FILENAME = 'helpdesk.db'
-DB_DATA_DIR = 'data'
-DB_DATA_PATH = os.path.join(DB_DATA_DIR, DB_FILENAME)
+DB_DATA_PATH = 'data/helpdesk.db'
 DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
-DB_LOCK_PATH = os.path.join(DB_DATA_DIR, DB_FILENAME + '.lock')
-DB_REPO_BACKUP_PREFIX = os.path.join(DB_DATA_DIR, 'repo_backup')
 
-def _sha256_of_file(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            h.update(chunk)
-    return h.hexdigest()
-
-def _acquire_lock(lock_path, timeout=30):
-    """Simple advisory lock using O_EXCL on a lockfile. Returns file descriptor.
-
-    This is cross-platform and avoids extra dependencies. Raises TimeoutError on failure.
-    """
-    start = time.time()
-    while True:
-        try:
-            # os.O_CREAT | os.O_EXCL ensures creation fails if exists
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.write(fd, f"pid:{os.getpid()} time:{time.time()}".encode())
-            return fd
-        except FileExistsError:
-            if time.time() - start > timeout:
-                raise TimeoutError(f"Timeout acquiring DB lock {lock_path}")
-            time.sleep(0.1)
-
-def _release_lock(fd, lock_path):
-    try:
-        os.close(fd)
-    except Exception:
-        pass
-    try:
-        os.remove(lock_path)
-    except Exception:
-        pass
-
-def ensure_persistent_db(create_schema_callback=None):
-    """Ensure a persistent DB exists in `data/helpdesk.db` and avoid overwriting it.
-
-    Rules implemented:
-    - If `data/helpdesk.db` exists: keep it (do not overwrite from repo file).
-    - If it doesn't exist and repo `helpdesk.db` exists: move it atomically to `data/`.
-      If both exist but differ, keep the data copy and move the repo DB to a timestamped
-      backup under `data/` so nothing is lost.
-    - If none exist: create an empty DB file and (optionally) invoke
-      `create_schema_callback(conn)` to initialize tables.
-    """
-    os.makedirs(DB_DATA_DIR, exist_ok=True)
-
-    fd = None
-    try:
-        fd = _acquire_lock(DB_LOCK_PATH, timeout=15)
-
-        data_exists = os.path.exists(DB_DATA_PATH)
-        repo_exists = os.path.exists(DB_ORIG_PATH)
-
-        if data_exists:
-            # Persistent DB already present. If repo also exists and is different,
-            # move repo DB to backups so a subsequent redeploy won't overwrite the
-            # persistent one by accident.
-            if repo_exists:
-                try:
-                    repo_hash = _sha256_of_file(DB_ORIG_PATH)
-                    data_hash = _sha256_of_file(DB_DATA_PATH)
-                except Exception:
-                    repo_hash = None
-                    data_hash = None
-
-                if repo_hash and data_hash and repo_hash != data_hash:
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    backup_path = f"{DB_REPO_BACKUP_PREFIX}_{timestamp}.db"
-                    try:
-                        shutil.move(DB_ORIG_PATH, backup_path)
-                        logging.getLogger(__name__).info(f"Repo DB moved to backup: {backup_path}")
-                    except Exception as e:
-                        logging.getLogger(__name__).warning(f"Could not move repo DB to backup: {e}")
-                else:
-                    # Repo and data equal or hashes not available: remove repo copy to
-                    # avoid accidental confusion on next deploy cycle
-                    try:
-                        os.remove(DB_ORIG_PATH)
-                        logging.getLogger(__name__).info("Removed redundant repo DB file")
-                    except Exception:
-                        pass
-            return
-
-        # If we reach here, data DB does not exist
-        if repo_exists:
-            # Move repo DB into persistent location atomically
-            try:
-                shutil.move(DB_ORIG_PATH, DB_DATA_PATH)
-                logging.getLogger(__name__).info("Moved repo DB to persistent data folder")
-                return
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to move repo DB, will attempt copy: {e}")
-                try:
-                    shutil.copy2(DB_ORIG_PATH, DB_DATA_PATH)
-                    logging.getLogger(__name__).info("Copied repo DB to persistent data folder")
-                    try:
-                        os.remove(DB_ORIG_PATH)
-                    except Exception:
-                        pass
-                    return
-                except Exception as e2:
-                    logging.getLogger(__name__).error(f"Failed to copy repo DB: {e2}")
-
-        # If neither exists, create an empty DB and optionally run schema init
-        conn = sqlite3.connect(DB_DATA_PATH)
-        if create_schema_callback:
-            try:
-                create_schema_callback(conn)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Schema callback failed: {e}")
-        conn.close()
-        logging.getLogger(__name__).info("Created empty persistent DB file")
-
-    finally:
-        if fd is not None:
-            _release_lock(fd, DB_LOCK_PATH)
+# --- CONEXIÓN A BASE DE DATOS LOCAL MEJORADA ---
+DB_FILENAME = 'helpdesk.db'
+DB_DATA_PATH = 'data/helpdesk.db'
+DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
 
 def get_db_connection(*args, **kwargs):
-    """Return a sqlite3 connection pointing to the persistent DB path.
+    """Conexión robusta a la base de datos - versión simplificada"""
+    
+    os.makedirs('data', exist_ok=True)
+    
+    # SOLO crear la base de datos si no existe, NUNCA actualizar desde original
+    if not os.path.exists(DB_DATA_PATH):
+        _create_initial_db_if_needed()
+    
+    # Conectar directamente sin locks complejos
+    # SQLite ya maneja locks internamente para operaciones concurrentes
+    conn = sqlite3.connect(DB_DATA_PATH, check_same_thread=False, timeout=30)
+    return conn
 
-    This function ensures the persistent DB exists before connecting.
-    """
-    ensure_persistent_db()
-    # Allow callers to override check_same_thread or timeout via kwargs
-    conn_kwargs = dict(kwargs)
-    # Use a reasonably long timeout for transient lock contention
-    if 'timeout' not in conn_kwargs:
-        conn_kwargs['timeout'] = 30
-    # Allow multi-threaded access from Streamlit app if needed
-    if 'check_same_thread' not in conn_kwargs:
-        conn_kwargs['check_same_thread'] = False
+def _create_initial_db_if_needed():
+    """Crear base de datos inicial solo si no existe"""
+    try:
+        if not os.path.exists(DB_DATA_PATH):
+            # Primero intentar copiar desde el original si existe
+            if os.path.exists(DB_ORIG_PATH):
+                shutil.copy2(DB_ORIG_PATH, DB_DATA_PATH)
+                logger.info("✅ Base de datos inicial copiada desde original")
+            else:
+                # Si no existe original, crear estructura básica
+                conn = sqlite3.connect(DB_DATA_PATH)
+                conn.close()
+                logger.info("Base de datos local creada (estructura básica)")
+                
+    except Exception as e:
+        logger.error(f"Error al crear base de datos: {str(e)}")
+        # En caso de error, intentar conexión directa como fallback
+        raise
 
-    return sqlite3.connect(DB_DATA_PATH, **conn_kwargs)
-
-# --- PARCHE: Interceptar llamadas a sqlite3.connect para usar la ruta persistente ---
+# --- PARCHE: Todas las llamadas a sqlite3.connect usarán nuestra función ---
 import sqlite3 as _sqlite3_global
 _original_sqlite3_connect = _sqlite3_global.connect
 
 def _patched_sqlite3_connect(*args, **kwargs):
-    """Intercept sqlite3.connect and remap requests for the repo DB to the persistent DB."""
-    # Detect database argument in positional or keyword form
-    db_arg = None
-    if len(args) > 0:
-        db_arg = args[0]
-    elif 'database' in kwargs:
-        db_arg = kwargs.get('database')
+    """
+    Intercepta TODAS las llamadas a sqlite3.connect
+    """
+    # Si la llamada es para 'helpdesk.db', usar nuestra versión persistente
+    if len(args) > 0 and args[0] == 'helpdesk.db':
+        return get_db_connection()
+    else:
+        # Para otras bases de datos, usar conexión normal
+        return _original_sqlite3_connect(*args, **kwargs)
 
-    # If caller already passed the persistent path, call original to avoid recursion
-    try:
-        if isinstance(db_arg, str) and os.path.abspath(db_arg) == os.path.abspath(DB_DATA_PATH):
-            return _original_sqlite3_connect(*args, **kwargs)
-    except Exception:
-        pass
-
-    # If caller asked for the repository DB filename (e.g. 'helpdesk.db'), remap it
-    if isinstance(db_arg, str) and (os.path.basename(db_arg) == DB_FILENAME or db_arg == DB_FILENAME):
-        # Replace with persistent path and preserve other args/kwargs
-        new_args = list(args)
-        if len(new_args) > 0:
-            new_args[0] = DB_DATA_PATH
-            return get_db_connection(*new_args, **kwargs)
-        else:
-            kwargs['database'] = DB_DATA_PATH
-            return get_db_connection(**kwargs)
-
-    # For any other DB, call original connect
-    return _original_sqlite3_connect(*args, **kwargs)
-
-# Apply the patch
+# Aplicar el parche
 _sqlite3_global.connect = _patched_sqlite3_connect
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral

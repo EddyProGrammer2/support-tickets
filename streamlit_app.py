@@ -14,7 +14,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 EMAILS_HABILITADOS = True
 fecha_actual = datetime.now().strftime("%d-%m-%Y %H:%M")
 
-# --- Persistencia de base de datos (SQLite) ---
+# --- Persistencia de base de datos (SQLite) --
 import os
 import shutil
 from pathlib import Path

@@ -6,6 +6,7 @@ import time
 import altair as alt
 import streamlit.components.v1 as components
 from streamlit_kanban import kanban
+from io import BytesIO
 import numpy as np
 import plotly.express as px 
 import pandas as pd
@@ -14,7 +15,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 EMAILS_HABILITADOS = True
 fecha_actual = datetime.now().strftime("%d-%m-%Y %H:%M")
 
-# --- Persistencia de base de datos (SQLite) --
+# --- Persistencia de base de datos (SQLite) ---
 import os
 import shutil
 from pathlib import Path
@@ -817,6 +818,82 @@ elif rol == "Soporte":
     df = st.session_state.df.copy()
     df_filtrado = df[df["asignado"] == usuario_actual]
     df_filtrado = df_filtrado[df_filtrado["tipo"] != "archivado"]  # No mostrar archivados en Kanban
+
+    # --- Filtro adicional por encima del Kanban ---
+    with st.expander("Filtros avanzados", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            estado_sel = st.multiselect("Estado", options=sorted(df_filtrado['Status'].dropna().unique()), default=[], key='f_estado')
+            prioridad_sel = st.multiselect("Prioridad", options=sorted(df_filtrado['Priority'].dropna().unique()), default=[], key='f_prioridad')
+        with col2:
+            sede_sel = st.multiselect("Sede", options=sorted(df_filtrado['sede'].dropna().unique()), default=[], key='f_sede')
+            tipo_sel = st.multiselect("Tipo", options=sorted(df_filtrado['tipo'].dropna().unique()), default=[], key='f_tipo')
+        with col3:
+            asignado_sel = st.multiselect("Asignado", options=sorted(df_filtrado['asignado'].dropna().unique()), default=[], key='f_asignado')
+            texto_busqueda = st.text_input("Buscar (texto libre)", value="", key='f_texto')
+
+            # Nuevo: rango de fechas y filtro por antigüedad (días)
+            today = datetime.now().date()
+            # default start = Jan 1 of current year
+            default_start = datetime(today.year, 1, 1).date()
+        try:
+            fecha_range = st.date_input("Rango fecha envío (inicio - fin)", value=(default_start, today), key='f_fecha_range')
+        except Exception:
+            # En versiones antiguas de Streamlit, date_input puede devolver lista
+            fecha_range = st.date_input("Rango fecha envío (inicio - fin)", key='f_fecha_range')
+
+        antig_max = st.slider("Antigüedad máxima (días)", min_value=0, max_value=365, value=365, key='f_antiguedad')
+
+        # Botón para resetear filtros y contador
+        c_left, c_mid, c_right = st.columns([1,1,2])
+        with c_left:
+            if st.button("Reset filtros", key='f_reset'):
+                for k in ['f_estado','f_prioridad','f_sede','f_tipo','f_asignado','f_texto','f_fecha_range','f_antiguedad']:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                st.rerun()
+        with c_mid:
+            st.markdown(f"**Tickets mostrados:** {len(df_filtrado)}")
+        with c_right:
+            st.write("")
+
+        # Aplicar filtros seleccionados
+        if estado_sel:
+            df_filtrado = df_filtrado[df_filtrado['Status'].isin(estado_sel)]
+        if prioridad_sel:
+            df_filtrado = df_filtrado[df_filtrado['Priority'].isin(prioridad_sel)]
+        if sede_sel:
+            df_filtrado = df_filtrado[df_filtrado['sede'].isin(sede_sel)]
+        if tipo_sel:
+            df_filtrado = df_filtrado[df_filtrado['tipo'].isin(tipo_sel)]
+        if asignado_sel:
+            df_filtrado = df_filtrado[df_filtrado['asignado'].isin(asignado_sel)]
+        if texto_busqueda and texto_busqueda.strip():
+            q = texto_busqueda.strip().lower()
+            df_filtrado = df_filtrado[df_filtrado.apply(lambda r: q in (str(r['Issue']) + ' ' + str(r['usuario']) + ' ' + str(r.get('email',''))).lower(), axis=1)]
+
+        # Aplicar filtro por rango de fechas y antigüedad
+        # Crear columna temporal con datetimes
+        if 'Date Submitted' in df_filtrado.columns:
+            df_filtrado = df_filtrado.copy()
+            df_filtrado['__date_dt'] = pd.to_datetime(df_filtrado['Date Submitted'], dayfirst=True, errors='coerce')
+            # fecha_range puede ser tuple (start, end) o single date
+            try:
+                if isinstance(fecha_range, (list, tuple)) and len(fecha_range) == 2:
+                    start_d = pd.to_datetime(fecha_range[0])
+                    end_d = pd.to_datetime(fecha_range[1])
+                    df_filtrado = df_filtrado[(df_filtrado['__date_dt'] >= pd.Timestamp(start_d)) & (df_filtrado['__date_dt'] <= pd.Timestamp(end_d) + pd.Timedelta(days=1))]
+                elif fecha_range:
+                    single = pd.to_datetime(fecha_range)
+                    df_filtrado = df_filtrado[df_filtrado['__date_dt'].dt.date == single.date()]
+            except Exception:
+                pass
+
+            # Antigüedad: calcular días desde la fecha y filtrar
+            if antig_max is not None:
+                ahora = pd.Timestamp(datetime.now())
+                df_filtrado['__dias'] = (ahora - df_filtrado['__date_dt']).dt.days
+                df_filtrado = df_filtrado[df_filtrado['__dias'].notna() & (df_filtrado['__dias'] <= int(antig_max))]
     # Adaptar los tickets al formato del kanban_board
     deals = [
         {
@@ -906,14 +983,102 @@ elif rol == "Soporte":
         "department": "Risk Management",
         "is_active": True
     }
+    # Badge compacto mostrando rango de fechas y antigüedad activos
+    try:
+        fr = fecha_range
+        if isinstance(fr, (list, tuple)) and len(fr) == 2:
+            fstart = fr[0]
+            fend = fr[1]
+        else:
+            fstart = fr
+            fend = fr
+        fecha_badge = f"{fstart.strftime('%d-%m-%Y')} → {fend.strftime('%d-%m-%Y')}"
+    except Exception:
+        fecha_badge = "Todos"
+    antig_badge = f"Antig ≤ {int(antig_max)} días" if 'antig_max' in locals() and antig_max is not None else "Antig: Todos"
+    st.markdown(f"**Filtros activos:** {fecha_badge} · {antig_badge} · Tickets: **{len(df_filtrado)}**")
+
+    # Expander con tabla detallada y AgGrid interactiva
+    with st.expander("Vista detallada (tabla)", expanded=False):
+        st.write(f"Mostrando {len(df_filtrado)} tickets filtrados")
+        # Selector de columnas para exportar
+        cols = list(df_filtrado.columns)
+        cols_sel = st.multiselect("Columnas a mostrar/ exportar", options=cols, default=cols, key='cols_sel_soporte')
+
+        # AgGrid interactive table with pagination and row selection
+        try:
+            from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+            gb = GridOptionsBuilder.from_dataframe(df_filtrado[cols_sel].reset_index(drop=True))
+            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
+            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
+            gb.configure_side_bar()
+            gridOptions = gb.build()
+            grid_response = AgGrid(
+                df_filtrado[cols_sel].reset_index(drop=True),
+                gridOptions=gridOptions,
+                enable_enterprise_modules=False,
+                update_mode=GridUpdateMode.MODEL_CHANGED,
+                theme='streamlit',
+                height=400,
+                fit_columns_on_grid_load=True,
+            )
+
+            selected = grid_response.get('selected_rows', [])
+            # Convert selected to DataFrame
+            selected_df = pd.DataFrame(selected) if selected else pd.DataFrame()
+
+            # Export buttons: selected or all
+            col_export_1, col_export_2 = st.columns(2)
+            with col_export_1:
+                if not selected_df.empty:
+                    csv_sel = selected_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Descargar CSV (seleccionados)", data=csv_sel, file_name="tickets_seleccionados.csv", mime='text/csv')
+                else:
+                    csv_all = df_filtrado[cols_sel].to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Descargar CSV (filtrados)", data=csv_all, file_name="tickets_filtrados.csv", mime='text/csv')
+            with col_export_2:
+                try:
+                    towrite = BytesIO()
+                    if not selected_df.empty:
+                        selected_df.to_excel(towrite, index=False, engine='openpyxl')
+                    else:
+                        df_filtrado[cols_sel].to_excel(towrite, index=False, engine='openpyxl')
+                    towrite.seek(0)
+                    st.download_button("📥 Descargar XLSX", data=towrite, file_name="tickets.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                except Exception:
+                    # fallback without engine
+                    towrite = BytesIO()
+                    if not selected_df.empty:
+                        selected_df.to_excel(towrite, index=False)
+                    else:
+                        df_filtrado[cols_sel].to_excel(towrite, index=False)
+                    towrite.seek(0)
+                    st.download_button("📥 Descargar XLSX (fallback)", data=towrite, file_name="tickets.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        except Exception as e:
+            st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
+            # Fallback to plain dataframe and existing downloads
+            st.dataframe(df_filtrado[cols_sel].reset_index(drop=True), use_container_width=True)
+            try:
+                csv = df_filtrado[cols_sel].to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Descargar CSV (filtrados)", data=csv, file_name="tickets_filtrados.csv", mime='text/csv')
+                towrite = BytesIO()
+                try:
+                    df_filtrado[cols_sel].to_excel(towrite, index=False, engine='openpyxl')
+                except Exception:
+                    df_filtrado[cols_sel].to_excel(towrite, index=False)
+                towrite.seek(0)
+                st.download_button("📥 Descargar XLSX (filtrados)", data=towrite, file_name="tickets_filtrados.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            except Exception as e2:
+                st.warning(f"No se pudo preparar la descarga: {e2}")
+
     result = kanban_board(
-    stages=stages,
-    deals=deals,
-    user_info=user_info,
-    permission_matrix=permission_matrix,
-    show_tooltips=True,
-    key="kanban_tickets"
-)
+        stages=stages,
+        deals=deals,
+        user_info=user_info,
+        permission_matrix=permission_matrix,
+        show_tooltips=True,
+        key="kanban_tickets"
+    )
 
     selected_ticket_id = result.get("clicked_deal")
     if 'dialogo_cerrado' not in st.session_state:
@@ -1298,6 +1463,77 @@ elif rol == "Admin":
         df = st.session_state.df.copy()
         df = df[df["tipo"] != "archivado"]  # No mostrar archivados en Kanban
 
+        # --- Filtros avanzados para Admin (encima del Kanban) ---
+        with st.expander("Filtros avanzados", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                admin_estado = st.multiselect("Estado", options=sorted(df['Status'].dropna().unique()), default=[], key='admin_f_estado')
+                admin_prioridad = st.multiselect("Prioridad", options=sorted(df['Priority'].dropna().unique()), default=[], key='admin_f_prioridad')
+            with c2:
+                admin_sede = st.multiselect("Sede", options=sorted(df['sede'].dropna().unique()), default=[], key='admin_f_sede')
+                admin_tipo = st.multiselect("Tipo", options=sorted(df['tipo'].dropna().unique()), default=[], key='admin_f_tipo')
+            with c3:
+                admin_asignado = st.multiselect("Asignado", options=sorted(df['asignado'].dropna().unique()), default=[], key='admin_f_asignado')
+                admin_texto = st.text_input("Buscar (texto libre)", value="", key='admin_f_texto')
+
+            # Fecha y antigüedad para Admin
+            today_a = datetime.now().date()
+            # default start = Jan 1 of current year
+            default_start_a = datetime(today_a.year, 1, 1).date()
+            try:
+                admin_fecha_range = st.date_input("Rango fecha envío (inicio - fin)", value=(default_start_a, today_a), key='admin_f_fecha_range')
+            except Exception:
+                admin_fecha_range = st.date_input("Rango fecha envío (inicio - fin)", key='admin_f_fecha_range')
+
+            admin_antig_max = st.slider("Antigüedad máxima (días)", min_value=0, max_value=365, value=365, key='admin_f_antiguedad')
+
+            # Reset y contador
+            c_l, c_m, c_r = st.columns([1,1,2])
+            with c_l:
+                if st.button("Reset filtros", key='admin_f_reset'):
+                    for k in ['admin_f_estado','admin_f_prioridad','admin_f_sede','admin_f_tipo','admin_f_asignado','admin_f_texto','admin_f_fecha_range','admin_f_antiguedad']:
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.rerun()
+            with c_m:
+                st.markdown(f"**Tickets mostrados:** {len(df)}")
+            with c_r:
+                st.write("")
+
+            if admin_estado:
+                df = df[df['Status'].isin(admin_estado)]
+            if admin_prioridad:
+                df = df[df['Priority'].isin(admin_prioridad)]
+            if admin_sede:
+                df = df[df['sede'].isin(admin_sede)]
+            if admin_tipo:
+                df = df[df['tipo'].isin(admin_tipo)]
+            if admin_asignado:
+                df = df[df['asignado'].isin(admin_asignado)]
+            if admin_texto and admin_texto.strip():
+                q = admin_texto.strip().lower()
+                df = df[df.apply(lambda r: q in (str(r['Issue']) + ' ' + str(r['usuario']) + ' ' + str(r.get('email',''))).lower(), axis=1)]
+
+            # Aplicar filtro por rango de fechas y antigüedad (Admin)
+            if 'Date Submitted' in df.columns:
+                df = df.copy()
+                df['__date_dt'] = pd.to_datetime(df['Date Submitted'], dayfirst=True, errors='coerce')
+                try:
+                    if isinstance(admin_fecha_range, (list, tuple)) and len(admin_fecha_range) == 2:
+                        s_d = pd.to_datetime(admin_fecha_range[0])
+                        e_d = pd.to_datetime(admin_fecha_range[1])
+                        df = df[(df['__date_dt'] >= pd.Timestamp(s_d)) & (df['__date_dt'] <= pd.Timestamp(e_d) + pd.Timedelta(days=1))]
+                    elif admin_fecha_range:
+                        single = pd.to_datetime(admin_fecha_range)
+                        df = df[df['__date_dt'].dt.date == single.date()]
+                except Exception:
+                    pass
+
+                if admin_antig_max is not None:
+                    ahora_a = pd.Timestamp(datetime.now())
+                    df['__dias'] = (ahora_a - df['__date_dt']).dt.days
+                    df = df[df['__dias'].notna() & (df['__dias'] <= int(admin_antig_max))]
+
     deals = [
         {
             "id": row["ID"],
@@ -1342,6 +1578,88 @@ elif rol == "Admin":
         "department": "Risk Management",
         "is_active": True
     }
+    # Badge compacto mostrando rango de fechas y antigüedad activos (Admin)
+    try:
+        afr = admin_fecha_range
+        if isinstance(afr, (list, tuple)) and len(afr) == 2:
+            afstart = afr[0]
+            afend = afr[1]
+        else:
+            afstart = afr
+            afend = afr
+        fecha_badge_admin = f"{afstart.strftime('%d-%m-%Y')} → {afend.strftime('%d-%m-%Y')}"
+    except Exception:
+        fecha_badge_admin = "Todos"
+    antig_badge_admin = f"Antig ≤ {int(admin_antig_max)} días" if 'admin_antig_max' in locals() and admin_antig_max is not None else "Antig: Todos"
+    st.markdown(f"**Filtros activos:** {fecha_badge_admin} · {antig_badge_admin} · Tickets: **{len(df)}**")
+
+    # Expander con tabla detallada y AgGrid interactiva (Admin)
+    with st.expander("Vista detallada (tabla) - Admin", expanded=False):
+        st.write(f"Mostrando {len(df)} tickets filtrados")
+        cols_a = list(df.columns)
+        cols_sel_a = st.multiselect("Columnas a mostrar/ exportar", options=cols_a, default=cols_a, key='cols_sel_admin')
+
+        try:
+            from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+            gb_a = GridOptionsBuilder.from_dataframe(df[cols_sel_a].reset_index(drop=True))
+            gb_a.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
+            gb_a.configure_selection(selection_mode='multiple', use_checkbox=True)
+            gb_a.configure_side_bar()
+            gridOptions_a = gb_a.build()
+            grid_response_a = AgGrid(
+                df[cols_sel_a].reset_index(drop=True),
+                gridOptions=gridOptions_a,
+                enable_enterprise_modules=False,
+                update_mode=GridUpdateMode.MODEL_CHANGED,
+                theme='streamlit',
+                height=400,
+                fit_columns_on_grid_load=True,
+            )
+
+            selected_a = grid_response_a.get('selected_rows', [])
+            selected_df_a = pd.DataFrame(selected_a) if selected_a else pd.DataFrame()
+
+            col_export_1a, col_export_2a = st.columns(2)
+            with col_export_1a:
+                if not selected_df_a.empty:
+                    csv_sel_a = selected_df_a.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Descargar CSV (seleccionados - Admin)", data=csv_sel_a, file_name="tickets_seleccionados_admin.csv", mime='text/csv')
+                else:
+                    csv_all_a = df[cols_sel_a].to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Descargar CSV (filtrados - Admin)", data=csv_all_a, file_name="tickets_filtrados_admin.csv", mime='text/csv')
+            with col_export_2a:
+                try:
+                    towrite_a = BytesIO()
+                    if not selected_df_a.empty:
+                        selected_df_a.to_excel(towrite_a, index=False, engine='openpyxl')
+                    else:
+                        df[cols_sel_a].to_excel(towrite_a, index=False, engine='openpyxl')
+                    towrite_a.seek(0)
+                    st.download_button("📥 Descargar XLSX", data=towrite_a, file_name="tickets_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                except Exception:
+                    towrite_a = BytesIO()
+                    if not selected_df_a.empty:
+                        selected_df_a.to_excel(towrite_a, index=False)
+                    else:
+                        df[cols_sel_a].to_excel(towrite_a, index=False)
+                    towrite_a.seek(0)
+                    st.download_button("📥 Descargar XLSX (Admin - fallback)", data=towrite_a, file_name="tickets_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        except Exception as e:
+            st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
+            st.dataframe(df[cols_sel_a].reset_index(drop=True), use_container_width=True)
+            try:
+                csv_admin = df[cols_sel_a].to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Descargar CSV (filtrados - Admin)", data=csv_admin, file_name="tickets_filtrados_admin.csv", mime='text/csv')
+                towrite = BytesIO()
+                try:
+                    df[cols_sel_a].to_excel(towrite, index=False, engine='openpyxl')
+                except Exception:
+                    df[cols_sel_a].to_excel(towrite, index=False)
+                towrite.seek(0)
+                st.download_button("📥 Descargar XLSX (filtrados - Admin)", data=towrite, file_name="tickets_filtrados_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            except Exception as e2:
+                st.warning(f"No se pudo preparar la descarga: {e2}")
+
     result = kanban_board(
         stages=stages,
         deals=deals,
@@ -2091,6 +2409,6 @@ if rol == 'Soporte' or rol == 'Admin':
         st.info("Selecciona un propósito para ver las categorías disponibles.")
 #------------------------------------------------------------Admin----------------------------------------------------------------------------------#
 st.markdown("---")
-st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. ©2025 V1.0.0..</p>
+st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. @""" + str(datetime.now().year) + """ V1.0.0..</p>
      </div>
  """, unsafe_allow_html=True)

@@ -1210,12 +1210,31 @@ elif rol == "Soporte":
                         if adj:
                             tipo_mime, contenido = adj
                             ext = os.path.splitext(nombre_archivo)[1].lower()
+                            # Imágenes
                             if tipo_mime and tipo_mime.startswith("image"):
                                 import io
                                 st.image(io.BytesIO(contenido), caption=nombre_archivo, width=200)
+                            # Videos
                             elif tipo_mime and tipo_mime.startswith("video"):
                                 import io
                                 st.video(io.BytesIO(contenido))
+                            # PDFs: mostrar inline si es posible
+                            elif ext == '.pdf' or (tipo_mime and tipo_mime == 'application/pdf'):
+                                try:
+                                    # Preferir st.pdf si está disponible (Streamlit >= 1.22+)
+                                    if hasattr(st, 'pdf'):
+                                        from io import BytesIO
+                                        st.pdf(BytesIO(contenido))
+                                    else:
+                                        # Fallback: incrustar PDF en iframe mediante base64
+                                        import base64
+                                        b64 = base64.b64encode(contenido).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                except Exception:
+                                    # Si algo falla, ofrecer descarga
+                                    st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                            # Otros tipos: ofrecer descarga
                             else:
                                 st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
                         else:
@@ -1235,6 +1254,20 @@ elif rol == "Soporte":
                                 st.image(ruta, caption=nombre_archivo, width=200)
                             elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
                                 st.video(ruta)
+                            elif ext == '.pdf':
+                                try:
+                                    if hasattr(st, 'pdf'):
+                                        st.pdf(ruta)
+                                    else:
+                                        # Embed using iframe to show local file (read and base64 encode)
+                                        with open(ruta, 'rb') as f:
+                                            import base64
+                                            b64 = base64.b64encode(f.read()).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                except Exception:
+                                    with open(ruta, "rb") as f:
+                                        st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
                             else:
                                 with open(ruta, "rb") as f:
                                     st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
@@ -1309,7 +1342,7 @@ elif rol == "Soporte":
             tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo.type or "application/octet-stream"
             contenido = archivo.getbuffer().tobytes()
             fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
-            usuario_adj = "Admin"
+            usuario_adj = usuario_actual
             # Guardar en base de datos SOLO si NO EXISTE
             conn = sqlite3.connect('helpdesk.db')
             c = conn.cursor()
@@ -1967,6 +2000,18 @@ elif rol == "Admin":
                             elif tipo_mime and tipo_mime.startswith("video"):
                                 import io
                                 st.video(io.BytesIO(contenido))
+                            elif ext == '.pdf' or (tipo_mime and tipo_mime == 'application/pdf'):
+                                try:
+                                    if hasattr(st, 'pdf'):
+                                        from io import BytesIO
+                                        st.pdf(BytesIO(contenido))
+                                    else:
+                                        import base64
+                                        b64 = base64.b64encode(contenido).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                except Exception:
+                                    st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
                             else:
                                 st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
                         else:
@@ -1986,6 +2031,19 @@ elif rol == "Admin":
                                 st.image(ruta, caption=nombre_archivo, width=200)
                             elif ext in [".mp4", ".webm", ".ogg", ".mov", ".avi"]:
                                 st.video(ruta)
+                            elif ext == '.pdf':
+                                try:
+                                    if hasattr(st, 'pdf'):
+                                        st.pdf(ruta)
+                                    else:
+                                        with open(ruta, 'rb') as f:
+                                            import base64
+                                            b64 = base64.b64encode(f.read()).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                except Exception:
+                                    with open(ruta, "rb") as f:
+                                        st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
                             else:
                                 with open(ruta, "rb") as f:
                                     st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)

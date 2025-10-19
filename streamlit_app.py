@@ -1220,20 +1220,29 @@ elif rol == "Soporte":
                                 st.video(io.BytesIO(contenido))
                             # PDFs: mostrar inline si es posible
                             elif ext == '.pdf' or (tipo_mime and tipo_mime == 'application/pdf'):
+                                # Intentar mostrar inline; si falla, hacer fallback a iframe y finalmente a descarga
                                 try:
-                                    # Preferir st.pdf si está disponible (Streamlit >= 1.22+)
+                                    from io import BytesIO
                                     if hasattr(st, 'pdf'):
-                                        from io import BytesIO
-                                        st.pdf(BytesIO(contenido))
+                                        st.pdf(BytesIO(contenido), height=600)
                                     else:
-                                        # Fallback: incrustar PDF en iframe mediante base64
                                         import base64
                                         b64 = base64.b64encode(contenido).decode('utf-8')
                                         pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
                                         components.html(pdf_display, height=600, scrolling=True)
-                                except Exception:
-                                    # Si algo falla, ofrecer descarga
+                                    # También ofrecer descarga directa
                                     st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                                except Exception as e:
+                                    st.warning(f"No se pudo renderizar PDF inline: {e}")
+                                    try:
+                                        import base64
+                                        b64 = base64.b64encode(contenido).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                        st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
+                                    except Exception as e2:
+                                        st.error(f"No se pudo mostrar el PDF (fallback falló): {e2}")
+                                        st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
                             # Otros tipos: ofrecer descarga
                             else:
                                 st.download_button(f"Descargar {nombre_archivo}", data=contenido, file_name=nombre_archivo)
@@ -1257,17 +1266,28 @@ elif rol == "Soporte":
                             elif ext == '.pdf':
                                 try:
                                     if hasattr(st, 'pdf'):
-                                        st.pdf(ruta)
+                                        st.pdf(ruta, height=600)
                                     else:
-                                        # Embed using iframe to show local file (read and base64 encode)
                                         with open(ruta, 'rb') as f:
                                             import base64
                                             b64 = base64.b64encode(f.read()).decode('utf-8')
                                         pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
                                         components.html(pdf_display, height=600, scrolling=True)
-                                except Exception:
-                                    with open(ruta, "rb") as f:
-                                        st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)
+                                    # Descarga disponible
+                                    with open(ruta, 'rb') as f:
+                                        st.download_button(f"Descargar {nombre_archivo}", f.read(), file_name=nombre_archivo)
+                                except Exception as e:
+                                    st.warning(f"No se pudo mostrar el PDF desde disco: {e}")
+                                    try:
+                                        with open(ruta, 'rb') as f:
+                                            import base64
+                                            b64 = base64.b64encode(f.read()).decode('utf-8')
+                                        pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
+                                        components.html(pdf_display, height=600, scrolling=True)
+                                        with open(ruta, 'rb') as f:
+                                            st.download_button(f"Descargar {nombre_archivo}", f.read(), file_name=nombre_archivo)
+                                    except Exception as e2:
+                                        st.error(f"No se pudo mostrar ni descargar el PDF: {e2}")
                             else:
                                 with open(ruta, "rb") as f:
                                     st.download_button(f"Descargar {nombre_archivo}", f, file_name=nombre_archivo)

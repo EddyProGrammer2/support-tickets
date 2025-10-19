@@ -1,4 +1,5 @@
 streamlit
+streamlit[pdf]
 streamlit-aggrid
 xlsxwriter
 streamlit_kanban

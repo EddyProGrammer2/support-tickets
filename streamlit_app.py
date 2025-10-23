@@ -896,11 +896,12 @@ elif rol == "Soporte":
         st.sidebar.warning("✗ Emails deshabilitados")
     # Definir los estados para el tablero Kanban
     def get_priority_color(priority):
-        if priority.lower() == "alta":
+        p = (str(priority) if priority is not None else "").lower()
+        if p == "alta":
             return "red"
-        elif priority.lower() == "media":
+        elif p == "media":
             return "orange"
-        elif priority.lower() == "baja":
+        elif p == "baja":
             return "green"
         else:
             return "gray"  # Por si hay valores inesperados
@@ -1105,6 +1106,13 @@ elif rol == "Soporte":
         try:
             from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
             df_table = df_filtrado[cols_sel].reset_index(drop=True)
+            # Saneamiento: convertir columnas object a str para evitar problemas de render en AgGrid
+            for _c in df_table.columns:
+                try:
+                    if str(df_table[_c].dtype) == 'object':
+                        df_table[_c] = df_table[_c].astype(str)
+                except Exception:
+                    pass
             gb = GridOptionsBuilder.from_dataframe(df_table)
             gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
             gb.configure_selection(selection_mode='multiple', use_checkbox=True)
@@ -1754,6 +1762,13 @@ elif rol == "Admin":
         try:
             from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
             df_table_a = df[cols_sel_a].reset_index(drop=True)
+            # Saneamiento: convertir columnas object a str para evitar problemas de render en AgGrid
+            for _c in df_table_a.columns:
+                try:
+                    if str(df_table_a[_c].dtype) == 'object':
+                        df_table_a[_c] = df_table_a[_c].astype(str)
+                except Exception:
+                    pass
             gb_a = GridOptionsBuilder.from_dataframe(df_table_a)
             gb_a.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
             gb_a.configure_selection(selection_mode='multiple', use_checkbox=True)

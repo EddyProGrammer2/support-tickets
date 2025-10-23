@@ -299,6 +299,19 @@ def normalize_status(status_value):
     # Por defecto considerar como abierto
     return "Abierto"
 
+def normalize_priority(priority_value):
+    """Normaliza prioridad a: Alta | Media | Baja."""
+    if priority_value is None:
+        return "Media"
+    p = str(priority_value).strip().lower()
+    if p in {"alta", "high", "urgent"}:
+        return "Alta"
+    if p in {"media", "medium", "normal"}:
+        return "Media"
+    if p in {"baja", "low"}:
+        return "Baja"
+    return priority_value if priority_value else "Media"
+
 def obtener_tiempo_primera_respuesta():
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
@@ -496,6 +509,7 @@ def obtener_tickets_db():
         try:
             r_list = list(r)
             r_list[2] = normalize_status(r_list[2])
+            r_list[3] = normalize_priority(r_list[3])
             rows_norm.append(tuple(r_list))
         except Exception:
             rows_norm.append(r)
@@ -577,6 +591,17 @@ if "df" not in st.session_state:
     rows = obtener_tickets_db()
     df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     st.session_state.df = df
+else:
+    # Asegurar normalización de estados y prioridad en cada rerun
+    try:
+        sdf = st.session_state.df.copy()
+        if 'Status' in sdf.columns:
+            sdf['Status'] = sdf['Status'].apply(normalize_status)
+        if 'Priority' in sdf.columns:
+            sdf['Priority'] = sdf['Priority'].apply(normalize_priority)
+        st.session_state.df = sdf
+    except Exception:
+        pass
 
 # Selección de rol al inicio
 rol = st.sidebar.selectbox(
@@ -919,8 +944,11 @@ elif rol == "Soporte":
     with st.expander("Filtros avanzados", expanded=False):
         col1, col2, col3 = st.columns(3)
         with col1:
-            estado_sel = st.multiselect("Estado", options=sorted(df_filtrado['Status'].dropna().unique()), default=[], key='f_estado')
-            prioridad_sel = st.multiselect("Prioridad", options=sorted(df_filtrado['Priority'].dropna().unique()), default=[], key='f_prioridad')
+            # Opciones canónicas para que siempre estén disponibles
+            opciones_estado = ["Abierto", "En progreso", "Cerrado"]
+            opciones_prioridad = ["Alta", "Media", "Baja"]
+            estado_sel = st.multiselect("Estado", options=opciones_estado, default=[], key='f_estado')
+            prioridad_sel = st.multiselect("Prioridad", options=opciones_prioridad, default=[], key='f_prioridad')
         with col2:
             sede_sel = st.multiselect("Sede", options=sorted(df_filtrado['sede'].dropna().unique()), default=[], key='f_sede')
             tipo_sel = st.multiselect("Tipo", options=sorted(df_filtrado['tipo'].dropna().unique()), default=[], key='f_tipo')
@@ -1604,11 +1632,12 @@ elif rol == "Admin":
         else:
             st.sidebar.warning("✗ Emails deshabilitados")
         def get_priority_color(priority):
-            if priority.lower() == "alta":
+            p = (str(priority) if priority is not None else "").lower()
+            if p == "alta":
                 return "red"
-            elif priority.lower() == "media":
+            elif p == "media":
                 return "orange"
-            elif priority.lower() == "baja":
+            elif p == "baja":
                 return "green"
             else:
                 return "gray"  # Por si hay valores inesperados
@@ -1625,8 +1654,10 @@ elif rol == "Admin":
         with st.expander("Filtros avanzados", expanded=False):
             c1, c2, c3 = st.columns(3)
             with c1:
-                admin_estado = st.multiselect("Estado", options=sorted(df['Status'].dropna().unique()), default=[], key='admin_f_estado')
-                admin_prioridad = st.multiselect("Prioridad", options=sorted(df['Priority'].dropna().unique()), default=[], key='admin_f_prioridad')
+                opciones_estado_admin = ["Abierto", "En progreso", "Cerrado"]
+                opciones_prioridad_admin = ["Alta", "Media", "Baja"]
+                admin_estado = st.multiselect("Estado", options=opciones_estado_admin, default=[], key='admin_f_estado')
+                admin_prioridad = st.multiselect("Prioridad", options=opciones_prioridad_admin, default=[], key='admin_f_prioridad')
             with c2:
                 admin_sede = st.multiselect("Sede", options=sorted(df['sede'].dropna().unique()), default=[], key='admin_f_sede')
                 admin_tipo = st.multiselect("Tipo", options=sorted(df['tipo'].dropna().unique()), default=[], key='admin_f_tipo')

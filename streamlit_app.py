@@ -279,39 +279,6 @@ def calcular_dias_transcurridos(fecha_creacion):
 
     return dias_transcurridos
 
-# --- Normalización de estados para Kanban y reportes ---
-def normalize_status(status_value):
-    """Devuelve el estado canónico esperado por el Kanban.
-
-    Mapea variaciones comunes (espacios, mayúsculas/minúsculas, equivalentes en inglés).
-    Canónicos: 'Abierto', 'En progreso', 'Cerrado'.
-    """
-    if status_value is None:
-        return "Abierto"
-    s = str(status_value).strip().lower()
-    if s in {"cerrado", "cerrados", "closed", "resolved", "resuelto", "finalizado", "completado", "done"}:
-        return "Cerrado"
-    if s in {"en progreso", "en_progreso", "en-progreso", "in progress", "in-progress", "progress", "pendiente", "en curso", "curso"}:
-        return "En progreso"
-    # Abierto y sin clasificar
-    if s in {"abierto", "abiertos", "open", "opened", "nuevo", "new"}:
-        return "Abierto"
-    # Por defecto considerar como abierto
-    return "Abierto"
-
-def normalize_priority(priority_value):
-    """Normaliza prioridad a: Alta | Media | Baja."""
-    if priority_value is None:
-        return "Media"
-    p = str(priority_value).strip().lower()
-    if p in {"alta", "high", "urgent"}:
-        return "Alta"
-    if p in {"media", "medium", "normal"}:
-        return "Media"
-    if p in {"baja", "low"}:
-        return "Baja"
-    return priority_value if priority_value else "Media"
-
 def obtener_tiempo_primera_respuesta():
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
@@ -503,17 +470,7 @@ def obtener_tickets_db():
     c.execute('SELECT id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email FROM tickets ORDER BY id DESC')
     rows = c.fetchall()
     conn.close()
-    # Normalizar el campo "status" (índice 2) para evitar desajustes con los stages del Kanban
-    rows_norm = []
-    for r in rows:
-        try:
-            r_list = list(r)
-            r_list[2] = normalize_status(r_list[2])
-            r_list[3] = normalize_priority(r_list[3])
-            rows_norm.append(tuple(r_list))
-        except Exception:
-            rows_norm.append(r)
-    return rows_norm
+    return rows
 
 def obtener_sedes_db():
     conn = sqlite3.connect('helpdesk.db')
@@ -591,17 +548,6 @@ if "df" not in st.session_state:
     rows = obtener_tickets_db()
     df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
     st.session_state.df = df
-else:
-    # Asegurar normalización de estados y prioridad en cada rerun
-    try:
-        sdf = st.session_state.df.copy()
-        if 'Status' in sdf.columns:
-            sdf['Status'] = sdf['Status'].apply(normalize_status)
-        if 'Priority' in sdf.columns:
-            sdf['Priority'] = sdf['Priority'].apply(normalize_priority)
-        st.session_state.df = sdf
-    except Exception:
-        pass
 
 # Selección de rol al inicio
 rol = st.sidebar.selectbox(
@@ -921,12 +867,11 @@ elif rol == "Soporte":
         st.sidebar.warning("✗ Emails deshabilitados")
     # Definir los estados para el tablero Kanban
     def get_priority_color(priority):
-        p = (str(priority) if priority is not None else "").lower()
-        if p == "alta":
+        if priority.lower() == "alta":
             return "red"
-        elif p == "media":
+        elif priority.lower() == "media":
             return "orange"
-        elif p == "baja":
+        elif priority.lower() == "baja":
             return "green"
         else:
             return "gray"  # Por si hay valores inesperados
@@ -944,11 +889,8 @@ elif rol == "Soporte":
     with st.expander("Filtros avanzados", expanded=False):
         col1, col2, col3 = st.columns(3)
         with col1:
-            # Opciones canónicas para que siempre estén disponibles
-            opciones_estado = ["Abierto", "En progreso", "Cerrado"]
-            opciones_prioridad = ["Alta", "Media", "Baja"]
-            estado_sel = st.multiselect("Estado", options=opciones_estado, default=[], key='f_estado')
-            prioridad_sel = st.multiselect("Prioridad", options=opciones_prioridad, default=[], key='f_prioridad')
+            estado_sel = st.multiselect("Estado", options=sorted(df_filtrado['Status'].dropna().unique()), default=[], key='f_estado')
+            prioridad_sel = st.multiselect("Prioridad", options=sorted(df_filtrado['Priority'].dropna().unique()), default=[], key='f_prioridad')
         with col2:
             sede_sel = st.multiselect("Sede", options=sorted(df_filtrado['sede'].dropna().unique()), default=[], key='f_sede')
             tipo_sel = st.multiselect("Tipo", options=sorted(df_filtrado['tipo'].dropna().unique()), default=[], key='f_tipo')
@@ -1022,8 +964,7 @@ elif rol == "Soporte":
     deals = [
         {
             "id": row["ID"],
-            # Asegurar que el stage sea canónico
-            "stage": normalize_status(row["Status"]),
+            "stage": row["Status"],
             "deal_id": row["ID"],
             "company_name": row['sede'] or "null",
             "product_type": row["Issue"] or "",
@@ -1126,28 +1067,20 @@ elif rol == "Soporte":
     # Expander con tabla detallada y AgGrid interactiva
     with st.expander("Vista detallada (tabla)", expanded=False):
         st.write(f"Mostrando {len(df_filtrado)} tickets filtrados")
-        # Selector de columnas para exportar (excluir columnas auxiliares internas como __date_dt, __dias)
-        cols = [c for c in df_filtrado.columns if not str(c).startswith("__")]
+        # Selector de columnas para exportar
+        cols = list(df_filtrado.columns)
         cols_sel = st.multiselect("Columnas a mostrar/ exportar", options=cols, default=cols, key='cols_sel_soporte')
 
         # AgGrid interactive table with pagination and row selection
         try:
             from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
-            df_table = df_filtrado[cols_sel].reset_index(drop=True)
-            # Saneamiento: convertir columnas object a str para evitar problemas de render en AgGrid
-            for _c in df_table.columns:
-                try:
-                    if str(df_table[_c].dtype) == 'object':
-                        df_table[_c] = df_table[_c].astype(str)
-                except Exception:
-                    pass
-            gb = GridOptionsBuilder.from_dataframe(df_table)
+            gb = GridOptionsBuilder.from_dataframe(df_filtrado[cols_sel].reset_index(drop=True))
             gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
             gb.configure_selection(selection_mode='multiple', use_checkbox=True)
             gb.configure_side_bar()
             gridOptions = gb.build()
             grid_response = AgGrid(
-                df_table,
+                df_filtrado[cols_sel].reset_index(drop=True),
                 gridOptions=gridOptions,
                 enable_enterprise_modules=False,
                 update_mode=GridUpdateMode.MODEL_CHANGED,
@@ -1167,7 +1100,7 @@ elif rol == "Soporte":
                     csv_sel = selected_df.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Descargar CSV (seleccionados)", data=csv_sel, file_name="tickets_seleccionados.csv", mime='text/csv')
                 else:
-                    csv_all = df_table.to_csv(index=False).encode('utf-8')
+                    csv_all = df_filtrado[cols_sel].to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Descargar CSV (filtrados)", data=csv_all, file_name="tickets_filtrados.csv", mime='text/csv')
             with col_export_2:
                 try:
@@ -1175,7 +1108,7 @@ elif rol == "Soporte":
                     if not selected_df.empty:
                         selected_df.to_excel(towrite, index=False, engine='openpyxl')
                     else:
-                        df_table.to_excel(towrite, index=False, engine='openpyxl')
+                        df_filtrado[cols_sel].to_excel(towrite, index=False, engine='openpyxl')
                     towrite.seek(0)
                     st.download_button("📥 Descargar XLSX", data=towrite, file_name="tickets.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 except Exception:
@@ -1184,21 +1117,21 @@ elif rol == "Soporte":
                     if not selected_df.empty:
                         selected_df.to_excel(towrite, index=False)
                     else:
-                        df_table.to_excel(towrite, index=False)
+                        df_filtrado[cols_sel].to_excel(towrite, index=False)
                     towrite.seek(0)
                     st.download_button("📥 Descargar XLSX (fallback)", data=towrite, file_name="tickets.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         except Exception as e:
             st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
             # Fallback to plain dataframe and existing downloads
-            st.dataframe(df_table, use_container_width=True)
+            st.dataframe(df_filtrado[cols_sel].reset_index(drop=True), use_container_width=True)
             try:
-                csv = df_table.to_csv(index=False).encode('utf-8')
+                csv = df_filtrado[cols_sel].to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV (filtrados)", data=csv, file_name="tickets_filtrados.csv", mime='text/csv')
                 towrite = BytesIO()
                 try:
-                    df_table.to_excel(towrite, index=False, engine='openpyxl')
+                    df_filtrado[cols_sel].to_excel(towrite, index=False, engine='openpyxl')
                 except Exception:
-                    df_table.to_excel(towrite, index=False)
+                    df_filtrado[cols_sel].to_excel(towrite, index=False)
                 towrite.seek(0)
                 st.download_button("📥 Descargar XLSX (filtrados)", data=towrite, file_name="tickets_filtrados.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             except Exception as e2:
@@ -1632,12 +1565,11 @@ elif rol == "Admin":
         else:
             st.sidebar.warning("✗ Emails deshabilitados")
         def get_priority_color(priority):
-            p = (str(priority) if priority is not None else "").lower()
-            if p == "alta":
+            if priority.lower() == "alta":
                 return "red"
-            elif p == "media":
+            elif priority.lower() == "media":
                 return "orange"
-            elif p == "baja":
+            elif priority.lower() == "baja":
                 return "green"
             else:
                 return "gray"  # Por si hay valores inesperados
@@ -1654,10 +1586,8 @@ elif rol == "Admin":
         with st.expander("Filtros avanzados", expanded=False):
             c1, c2, c3 = st.columns(3)
             with c1:
-                opciones_estado_admin = ["Abierto", "En progreso", "Cerrado"]
-                opciones_prioridad_admin = ["Alta", "Media", "Baja"]
-                admin_estado = st.multiselect("Estado", options=opciones_estado_admin, default=[], key='admin_f_estado')
-                admin_prioridad = st.multiselect("Prioridad", options=opciones_prioridad_admin, default=[], key='admin_f_prioridad')
+                admin_estado = st.multiselect("Estado", options=sorted(df['Status'].dropna().unique()), default=[], key='admin_f_estado')
+                admin_prioridad = st.multiselect("Prioridad", options=sorted(df['Priority'].dropna().unique()), default=[], key='admin_f_prioridad')
             with c2:
                 admin_sede = st.multiselect("Sede", options=sorted(df['sede'].dropna().unique()), default=[], key='admin_f_sede')
                 admin_tipo = st.multiselect("Tipo", options=sorted(df['tipo'].dropna().unique()), default=[], key='admin_f_tipo')
@@ -1726,8 +1656,7 @@ elif rol == "Admin":
     deals = [
         {
             "id": row["ID"],
-            # Asegurar que el stage sea canónico
-            "stage": normalize_status(row["Status"]),
+            "stage": row["Status"],
             "deal_id": row["ID"],
             "company_name": row['sede'] or "null",
             "product_type": row["Issue"] or "",
@@ -1786,27 +1715,18 @@ elif rol == "Admin":
     # Expander con tabla detallada y AgGrid interactiva (Admin)
     with st.expander("Vista detallada (tabla)", expanded=False):
         st.write(f"Mostrando {len(df)} tickets filtrados")
-        # Excluir columnas auxiliares internas como __date_dt, __dias
-        cols_a = [c for c in df.columns if not str(c).startswith("__")]
+        cols_a = list(df.columns)
         cols_sel_a = st.multiselect("Columnas a mostrar/ exportar", options=cols_a, default=cols_a, key='cols_sel_admin')
 
         try:
             from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
-            df_table_a = df[cols_sel_a].reset_index(drop=True)
-            # Saneamiento: convertir columnas object a str para evitar problemas de render en AgGrid
-            for _c in df_table_a.columns:
-                try:
-                    if str(df_table_a[_c].dtype) == 'object':
-                        df_table_a[_c] = df_table_a[_c].astype(str)
-                except Exception:
-                    pass
-            gb_a = GridOptionsBuilder.from_dataframe(df_table_a)
+            gb_a = GridOptionsBuilder.from_dataframe(df[cols_sel_a].reset_index(drop=True))
             gb_a.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
             gb_a.configure_selection(selection_mode='multiple', use_checkbox=True)
             gb_a.configure_side_bar()
             gridOptions_a = gb_a.build()
             grid_response_a = AgGrid(
-                df_table_a,
+                df[cols_sel_a].reset_index(drop=True),
                 gridOptions=gridOptions_a,
                 enable_enterprise_modules=False,
                 update_mode=GridUpdateMode.MODEL_CHANGED,
@@ -1824,7 +1744,7 @@ elif rol == "Admin":
                     csv_sel_a = selected_df_a.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Descargar CSV (seleccionados - Admin)", data=csv_sel_a, file_name="tickets_seleccionados_admin.csv", mime='text/csv')
                 else:
-                    csv_all_a = df_table_a.to_csv(index=False).encode('utf-8')
+                    csv_all_a = df[cols_sel_a].to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Descargar CSV (filtrados - Admin)", data=csv_all_a, file_name="tickets_filtrados_admin.csv", mime='text/csv')
             with col_export_2a:
                 try:
@@ -1832,7 +1752,7 @@ elif rol == "Admin":
                     if not selected_df_a.empty:
                         selected_df_a.to_excel(towrite_a, index=False, engine='openpyxl')
                     else:
-                        df_table_a.to_excel(towrite_a, index=False, engine='openpyxl')
+                        df[cols_sel_a].to_excel(towrite_a, index=False, engine='openpyxl')
                     towrite_a.seek(0)
                     st.download_button("📥 Descargar XLSX", data=towrite_a, file_name="tickets_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 except Exception:
@@ -1840,20 +1760,20 @@ elif rol == "Admin":
                     if not selected_df_a.empty:
                         selected_df_a.to_excel(towrite_a, index=False)
                     else:
-                        df_table_a.to_excel(towrite_a, index=False)
+                        df[cols_sel_a].to_excel(towrite_a, index=False)
                     towrite_a.seek(0)
                     st.download_button("📥 Descargar XLSX (Admin - fallback)", data=towrite_a, file_name="tickets_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         except Exception as e:
             st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
-            st.dataframe(df_table_a, use_container_width=True)
+            st.dataframe(df[cols_sel_a].reset_index(drop=True), use_container_width=True)
             try:
-                csv_admin = df_table_a.to_csv(index=False).encode('utf-8')
+                csv_admin = df[cols_sel_a].to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV (filtrados - Admin)", data=csv_admin, file_name="tickets_filtrados_admin.csv", mime='text/csv')
                 towrite = BytesIO()
                 try:
-                    df_table_a.to_excel(towrite, index=False, engine='openpyxl')
+                    df[cols_sel_a].to_excel(towrite, index=False, engine='openpyxl')
                 except Exception:
-                    df_table_a.to_excel(towrite, index=False)
+                    df[cols_sel_a].to_excel(towrite, index=False)
                 towrite.seek(0)
                 st.download_button("📥 Descargar XLSX (filtrados - Admin)", data=towrite, file_name="tickets_filtrados_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             except Exception as e2:

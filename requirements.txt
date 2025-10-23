@@ -5,3 +5,4 @@ xlsxwriter
 streamlit_kanban
 plotly
 openpyxl
+Pillow

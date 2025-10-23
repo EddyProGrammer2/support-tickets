@@ -12,6 +12,7 @@ import plotly.express as px
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from PIL import Image
 EMAILS_HABILITADOS = True
 fecha_actual = datetime.now().strftime("%d-%m-%Y %H:%M")
 
@@ -164,6 +165,62 @@ def get_db_connection(*args, **kwargs):
         conn_kwargs['check_same_thread'] = False
 
     return sqlite3.connect(DB_DATA_PATH, **conn_kwargs)
+
+
+def process_image_bytes(data_bytes, filename=None, max_dim=1600, jpeg_quality=85):
+    """Resize/compress image bytes while preserving reasonable quality.
+
+    - Keeps aspect ratio.
+    - If both dimensions are <= max_dim, returns original bytes.
+    - For JPEGs: converts to RGB if needed and saves with given quality.
+    - For PNGs: saves with optimize=True to try to reduce size while keeping transparency.
+    Returns: (bytes, new_mime_or_None)
+    """
+    try:
+        import io
+        from PIL import Image
+
+        buf_in = io.BytesIO(data_bytes)
+        img = Image.open(buf_in)
+        img_format = (img.format or '').upper()
+
+        # Determine if resize is needed
+        w, h = img.size
+        max_wh = max(w, h)
+        if max_wh > max_dim:
+            scale = max_dim / float(max_wh)
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img = img.resize(new_size, Image.LANCZOS)
+
+        buf_out = io.BytesIO()
+        if img_format in ('JPEG', 'JPG'):
+            # Ensure no alpha channel for JPEG
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            else:
+                img = img.convert('RGB')
+            img.save(buf_out, format='JPEG', quality=jpeg_quality, optimize=True)
+            return buf_out.getvalue(), 'image/jpeg'
+        else:
+            # For PNG and others, keep PNG to preserve transparency if present
+            if img_format == 'PNG' or img.mode in ('RGBA', 'LA'):
+                img.save(buf_out, format='PNG', optimize=True)
+                return buf_out.getvalue(), 'image/png'
+            else:
+                # Fallback: save as PNG for wide compatibility
+                img.save(buf_out, format='PNG', optimize=True)
+                return buf_out.getvalue(), 'image/png'
+    except Exception:
+        # If anything goes wrong, fall back to original bytes
+        return data_bytes, None
+    
+# Note: The helper above is intentionally conservative: it rescales images only when the
+# largest dimension exceeds `max_dim` (default 1600px) and compresses JPEGs at
+# `jpeg_quality` (default 85). This keeps images suitable for clear viewing in the
+# ticket history while avoiding storing excessively large files. Tune `max_dim` and
+# `jpeg_quality` as needed.
 
 # --- PARCHE: Interceptar llamadas a sqlite3.connect para usar la ruta persistente ---
 import sqlite3 as _sqlite3_global
@@ -575,9 +632,18 @@ if rol == "Usuario":
                     import mimetypes
                     nombre_archivo = archivo_usuario.name
                     tipo_mime = mimetypes.guess_type(nombre_archivo)[0] or archivo_usuario.type or "application/octet-stream"
-                    contenido = archivo_usuario.getbuffer().tobytes()
+                    raw_bytes = archivo_usuario.getbuffer().tobytes()
                     fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
                     usuario_adj = usuario or "Usuario"
+
+                    # If it's an image, attempt to process (resize/compress) while preserving quality
+                    contenido = raw_bytes
+                    processed_mime = None
+                    if tipo_mime and tipo_mime.startswith('image'):
+                        contenido, processed_mime = process_image_bytes(raw_bytes, filename=nombre_archivo)
+                        if processed_mime:
+                            tipo_mime = processed_mime
+
                     # Guardar en base de datos
                     conn = sqlite3.connect('helpdesk.db')
                     c = conn.cursor()

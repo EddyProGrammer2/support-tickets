@@ -1,3 +1,4 @@
+
 from datetime import datetime, timedelta
 import random
 import sqlite3
@@ -2426,15 +2427,103 @@ elif rol == "Config":
             with open("helpdesk_backup.db", "rb") as f:
                 st.download_button("Descargar", f, file_name="helpdesk_backup.db")
         # exportar db a sql con create table if not exist y boton de descarga
-        if st.button("Exportar base de datos a SQL"):
-            conn = sqlite3.connect('helpdesk.db')
-            with open("helpdesk_backup.sql", "w") as f:
-                for line in conn.iterdump():
-                    f.write(f"{line}\n")
-            conn.close()
-            st.success("Base de datos exportada como 'helpdesk_backup.sql'")
-            with open("helpdesk_backup.sql", "r") as f:
-                st.download_button("Descargar", f, file_name="helpdesk_backup.sql")
+        def _convert_sqlite_dump_to_mysql(sql_text: str) -> str:
+            """Attempt a conservative conversion from an sqlite3 .dump to MySQL-compatible SQL.
+
+            This performs textual transforms only; complex datatype/constraint differences
+            are handled with reasonable defaults (INTEGER->INT, TEXT->TEXT, REAL->DOUBLE,
+            BLOB->LONGBLOB, AUTOINCREMENT->AUTO_INCREMENT) and table options are appended.
+            The function is intentionally conservative to avoid breaking data; review output
+            before applying to a production MySQL instance.
+            """
+            import re
+
+            out_lines = []
+            buf = ''
+            in_create = False
+            for line in sql_text.splitlines():
+                # Skip SQLite-specific transaction pragmas
+                if line.strip().upper() == 'BEGIN TRANSACTION;':
+                    out_lines.append('SET FOREIGN_KEY_CHECKS = 0;')
+                    out_lines.append('START TRANSACTION;')
+                    continue
+                if line.strip().upper() == 'COMMIT;':
+                    out_lines.append('COMMIT;')
+                    out_lines.append('SET FOREIGN_KEY_CHECKS = 1;')
+                    continue
+
+                # Convert double-quoted identifiers to backticks (conservative)
+                # Avoid touching single-quoted string literals.
+                # This simple replace is OK because sqlite .dump uses double quotes for identifiers.
+                processed = line.replace('"', '`')
+
+                # Collect CREATE TABLE block to post-process types and append ENGINE
+                if processed.strip().upper().startswith('CREATE TABLE') and processed.strip().endswith('('):
+                    in_create = True
+                    buf = processed
+                    continue
+
+                if in_create:
+                    buf += '\n' + processed
+                    if processed.strip().endswith(');') or processed.strip().endswith(')'):
+                        # finished CREATE TABLE
+                        # Normalize types inside parentheses
+                        # Replace common types
+                        buf = re.sub(r'\bAUTOINCREMENT\b', 'AUTO_INCREMENT', buf, flags=re.IGNORECASE)
+                        buf = re.sub(r'\bINTEGER\b', 'INT', buf, flags=re.IGNORECASE)
+                        buf = re.sub(r'\bREAL\b', 'DOUBLE', buf, flags=re.IGNORECASE)
+                        buf = re.sub(r'\bBLOB\b', 'LONGBLOB', buf, flags=re.IGNORECASE)
+                        buf = re.sub(r'\bBOOLEAN\b', 'TINYINT(1)', buf, flags=re.IGNORECASE)
+                        # Ensure PRIMARY KEY AUTO_INCREMENT syntax when applicable
+                        buf = re.sub(r'`(\w+)`\s+INT\s+PRIMARY\s+KEY\s+AUTO_INCREMENT', r'`\1` INT PRIMARY KEY AUTO_INCREMENT', buf, flags=re.IGNORECASE)
+                        # Remove SQLite-specific WITHOUT ROWID if present
+                        buf = re.sub(r'WITHOUT ROWID', '', buf, flags=re.IGNORECASE)
+                        # Close with ENGINE and charset
+                        if buf.strip().endswith(');'):
+                            buf = buf.rstrip().rstrip(';') + ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;'
+                        out_lines.append(buf)
+                        buf = ''
+                        in_create = False
+                    continue
+
+                # Convert INSERT statements: change "table" to `table`
+                if processed.strip().upper().startswith('INSERT INTO'):
+                    # sqlite dumps sometimes use X'ABCD' for blobs; leave as-is
+                    out_lines.append(processed)
+                    continue
+
+                # Default: passthrough
+                out_lines.append(processed)
+
+            return '\n'.join(out_lines)
+
+        col_e1, col_e2 = st.columns([1,1])
+        with col_e1:
+            if st.button("Exportar base de datos a SQL (SQLite dump)"):
+                conn = sqlite3.connect('helpdesk.db')
+                with open("helpdesk_backup.sql", "w", encoding='utf-8') as f:
+                    for line in conn.iterdump():
+                        f.write(f"{line}\n")
+                conn.close()
+                st.success("Base de datos exportada como 'helpdesk_backup.sql'")
+                with open("helpdesk_backup.sql", "r", encoding='utf-8') as f:
+                    st.download_button("Descargar (SQLite)", f, file_name="helpdesk_backup.sql")
+
+        with col_e2:
+            if st.button("Exportar base de datos a SQL (MySQL)"):
+                conn = sqlite3.connect('helpdesk.db')
+                # Build sqlite dump in memory first
+                dump_lines = '\n'.join(conn.iterdump())
+                conn.close()
+                try:
+                    mysql_sql = _convert_sqlite_dump_to_mysql(dump_lines)
+                    with open("helpdesk_backup_mysql.sql", "w", encoding='utf-8') as f:
+                        f.write(mysql_sql)
+                    st.success("Base de datos exportada como 'helpdesk_backup_mysql.sql' (convertida para MySQL — revisar antes de aplicar)")
+                    with open("helpdesk_backup_mysql.sql", "r", encoding='utf-8') as f:
+                        st.download_button("Descargar (MySQL)", f, file_name="helpdesk_backup_mysql.sql")
+                except Exception as e:
+                    st.error(f"Error al convertir dump a MySQL: {e}")
         # importar archivo sql a bd
         sql_import = st.file_uploader("Subir archivo SQL", type="sql")
         if st.button("Importar base de datos desde SQL"):

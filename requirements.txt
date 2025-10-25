@@ -6,3 +6,4 @@ streamlit_kanban
 plotly
 openpyxl
 Pillow
+pymsql

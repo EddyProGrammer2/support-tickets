@@ -2570,7 +2570,7 @@ elif rol == "Config":
             if submit_sede and nueva_sede and nueva_sede.strip():
                 conn = sqlite3.connect('helpdesk.db')
                 c = conn.cursor()
-                c.execute('INSERT INTO sedes (username) VALUES (?)', (nueva_sede))
+                c.execute('INSERT INTO sedes (nombre) VALUES (?)', (nueva_sede))
                 conn.commit()
                 conn.close()
                 st.toast("Nueva sede agregada", icon="✅")

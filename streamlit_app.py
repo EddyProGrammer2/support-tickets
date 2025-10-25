@@ -165,6 +165,26 @@ def get_db_connection(*args, **kwargs):
     if 'check_same_thread' not in conn_kwargs:
         conn_kwargs['check_same_thread'] = False
 
+    # If pymysql is available, try to connect to the remote MySQL and return a shim
+    if _has_pymysql:
+        try:
+            # Create a pymysql connection using provided credentials
+            pym_conn = pymysql.connect(
+                host=MYSQL_HOST,
+                port=int(MYSQL_PORT),
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DB,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.Cursor,
+                autocommit=False,
+                connect_timeout=10
+            )
+            return _MySQLShimConnection(pym_conn)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Could not connect to remote MySQL ({MYSQL_HOST}): {e}. Falling back to SQLite.")
+
+    # Fallback to the local SQLite persistent DB
     return sqlite3.connect(DB_DATA_PATH, **conn_kwargs)
 
 
@@ -226,6 +246,100 @@ def process_image_bytes(data_bytes, filename=None, max_dim=1600, jpeg_quality=85
 # --- PARCHE: Interceptar llamadas a sqlite3.connect para usar la ruta persistente ---
 import sqlite3 as _sqlite3_global
 _original_sqlite3_connect = _sqlite3_global.connect
+# --- MySQL remote connection settings (configure below) ---
+# Credentials provided by the user
+MYSQL_HOST = 'sql204.infinityfree.com'
+MYSQL_PORT = 3306
+MYSQL_USER = 'if0_40232134'
+MYSQL_PASSWORD = 'Aluminiologo1'
+MYSQL_DB = 'if0_40232134_helpdesk'
+
+# Attempt to import pymysql. If not available, we'll fall back to SQLite.
+try:
+    import pymysql
+    _has_pymysql = True
+except Exception:
+    pymysql = None
+    _has_pymysql = False
+
+
+# Shim classes: provide a sqlite3-compatible connection/cursor API while delegating
+# to a pymysql connection under the hood. This allows the existing code (which
+# uses '?' parameter style) to work by translating '?' -> '%s'.
+class _MySQLShimCursor:
+    def __init__(self, pymysql_cursor):
+        self._cur = pymysql_cursor
+
+    def execute(self, sql, params=None):
+        # Translate positional ? placeholders to %s for pymysql
+        if params is not None and '?' in sql:
+            # naive but effective replacement: replace all ? with %s
+            sql_trans = sql.replace('?', '%s')
+        else:
+            sql_trans = sql
+        return self._cur.execute(sql_trans, params)
+
+    def executemany(self, sql, seq_of_params):
+        if seq_of_params and '?' in sql:
+            sql_trans = sql.replace('?', '%s')
+        else:
+            sql_trans = sql
+        return self._cur.executemany(sql_trans, seq_of_params)
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+
+
+class _MySQLShimConnection:
+    def __init__(self, pymysql_conn):
+        self._conn = pymysql_conn
+
+    def cursor(self):
+        return _MySQLShimCursor(self._conn.cursor())
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def close(self):
+        try:
+            return self._conn.close()
+        except Exception:
+            pass
+
+    # Support executescript used in the UI import (simple implementation)
+    def executescript(self, sql_text):
+        # Split on semicolons while ignoring obvious edge cases; execute statements sequentially
+        stmts = [s.strip() for s in sql_text.split(';') if s.strip()]
+        cur = self.cursor()
+        try:
+            for s in stmts:
+                cur.execute(s)
+            self.commit()
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+    # For compatibility: iterdump is not supported for MySQL
+    def iterdump(self):
+        raise NotImplementedError('iterdump not supported for MySQL shim')
+
 
 def _patched_sqlite3_connect(*args, **kwargs):
     """Intercept sqlite3.connect and remap requests for the repo DB to the persistent DB."""
@@ -281,6 +395,46 @@ def calcular_dias_transcurridos(fecha_creacion):
     return dias_transcurridos
 
 def obtener_tiempo_primera_respuesta():
+    # If the app is connected to MySQL, use MySQL functions (STR_TO_DATE, TIMESTAMPDIFF)
+    try:
+        conn_test = get_db_connection()
+        is_mysql_conn = isinstance(conn_test, _MySQLShimConnection)
+        conn_test.close()
+    except Exception:
+        is_mysql_conn = False
+
+    if is_mysql_conn:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Calculate hours between first ticket submission and first historial comment per ticket
+        sql = '''
+        SELECT AVG(horas) FROM (
+          SELECT t.id,
+            TIMESTAMPDIFF(MINUTE,
+              COALESCE(STR_TO_DATE(MIN(t.date_submitted), '%d-%m-%Y %H:%i'), STR_TO_DATE(MIN(t.date_submitted), '%d-%m-%Y')),
+              COALESCE(STR_TO_DATE(MIN(h.fecha), '%d-%m-%Y %H:%i'), STR_TO_DATE(MIN(h.fecha), '%d-%m-%Y'))
+            )/60.0 AS horas
+          FROM tickets t
+          JOIN historial h ON t.id = h.ticket_id
+          WHERE h.comentario IS NOT NULL
+          GROUP BY t.id
+        ) s;
+        '''
+        try:
+            c.execute(sql)
+            row = c.fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                return round(float(row[0]), 2)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+        return None
+
+    # Fallback (SQLite)
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
     c.execute('''
@@ -310,6 +464,46 @@ GROUP BY
 # Funcion para calcular promedio de tiempo de resolución (tickets cerrados)
 
 def obtener_tiempo_promedio():
+    # Try MySQL first
+    try:
+        conn_test = get_db_connection()
+        is_mysql_conn = isinstance(conn_test, _MySQLShimConnection)
+        conn_test.close()
+    except Exception:
+        is_mysql_conn = False
+
+    if is_mysql_conn:
+        conn = get_db_connection()
+        c = conn.cursor()
+        sql = '''
+        SELECT AVG(horas) FROM (
+          SELECT t.id,
+            TIMESTAMPDIFF(MINUTE,
+              COALESCE(STR_TO_DATE(t.date_submitted, '%d-%m-%Y %H:%i'), STR_TO_DATE(t.date_submitted, '%d-%m-%Y')),
+              COALESCE(STR_TO_DATE(MAX(h.fecha), '%d-%m-%Y %H:%i'), STR_TO_DATE(MAX(h.fecha), '%d-%m-%Y'))
+            )/60.0 AS horas
+          FROM tickets t
+          JOIN historial h ON t.id = h.ticket_id
+          WHERE h.comentario IS NOT NULL
+            AND t.status = 'Cerrado'
+          GROUP BY t.id
+        ) s;
+        '''
+        try:
+            c.execute(sql)
+            row = c.fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                return round(float(row[0]), 2)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+        return None
+
+    # Fallback (SQLite)
     conn = sqlite3.connect('helpdesk.db')
     c = conn.cursor()
     c.execute('''
@@ -2548,26 +2742,56 @@ if rol == 'Soporte' or rol == 'Admin':
     conn = sqlite3.connect('helpdesk.db')
 
     # Modificar la consulta principal para identificar qué categoría se usó
-    query = """
-    SELECT 
-        t.id,
-        t.tipo as tipo_ticket,
-        tp.descripcion,
-        tp.Categoria,
-        tp.Categoria_2,
-        tp.Categoria_3,
-        CASE 
-            WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria THEN 'Categoria'
-            WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 THEN 'Categoria_2'
-            WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria_3 THEN 'Categoria_3'
-        END as categoria_usada
-    FROM tickets t
-    INNER JOIN tipos_problema tp ON (
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria OR
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 OR
-        t.tipo = tp.descripcion || ' - ' || tp.Categoria_3
-    )
-    """
+    # Use SQL compatible con SQLite por defecto; si estamos conectados a MySQL, usar CONCAT()
+    try:
+        _test_conn = get_db_connection()
+        _is_mysql = isinstance(_test_conn, _MySQLShimConnection)
+        _test_conn.close()
+    except Exception:
+        _is_mysql = False
+
+    if _is_mysql:
+        query = """
+        SELECT 
+            t.id,
+            t.tipo as tipo_ticket,
+            tp.descripcion,
+            tp.Categoria,
+            tp.Categoria_2,
+            tp.Categoria_3,
+            CASE 
+                WHEN t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria) THEN 'Categoria'
+                WHEN t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria_2) THEN 'Categoria_2'
+                WHEN t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria_3) THEN 'Categoria_3'
+            END as categoria_usada
+        FROM tickets t
+        INNER JOIN tipos_problema tp ON (
+            t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria) OR
+            t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria_2) OR
+            t.tipo = CONCAT(tp.descripcion, ' - ', tp.Categoria_3)
+        )
+        """
+    else:
+        query = """
+        SELECT 
+            t.id,
+            t.tipo as tipo_ticket,
+            tp.descripcion,
+            tp.Categoria,
+            tp.Categoria_2,
+            tp.Categoria_3,
+            CASE 
+                WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria THEN 'Categoria'
+                WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 THEN 'Categoria_2'
+                WHEN t.tipo = tp.descripcion || ' - ' || tp.Categoria_3 THEN 'Categoria_3'
+            END as categoria_usada
+        FROM tickets t
+        INNER JOIN tipos_problema tp ON (
+            t.tipo = tp.descripcion || ' - ' || tp.Categoria OR
+            t.tipo = tp.descripcion || ' - ' || tp.Categoria_2 OR
+            t.tipo = tp.descripcion || ' - ' || tp.Categoria_3
+        )
+        """
     query2 = "SELECT * FROM tipos_problema"
     df_tickets_tipos = pd.read_sql_query(query, conn)
     df_tipos = pd.read_sql_query(query2, conn)

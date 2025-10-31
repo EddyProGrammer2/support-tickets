@@ -1,7 +1,6 @@
 
 from datetime import datetime, timedelta
 import random
-import sqlite3
 import logging
 import time
 import altair as alt
@@ -24,168 +23,46 @@ from pathlib import Path
 import re
 import hashlib
 
-# File names and paths
-DB_FILENAME = 'helpdesk.db'
-DB_DATA_DIR = 'data'
-DB_DATA_PATH = os.path.join(DB_DATA_DIR, DB_FILENAME)
-DB_ORIG_PATH = os.path.abspath(DB_FILENAME)
-DB_LOCK_PATH = os.path.join(DB_DATA_DIR, DB_FILENAME + '.lock')
-DB_REPO_BACKUP_PREFIX = os.path.join(DB_DATA_DIR, 'repo_backup')
+def get_db_connection():
+    """Return a MySQL connection wrapped with a sqlite-compatible shim. Uses environment variables for credentials.
 
-def _sha256_of_file(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            h.update(chunk)
-    return h.hexdigest()
-
-def _acquire_lock(lock_path, timeout=30):
-    """Simple advisory lock using O_EXCL on a lockfile. Returns file descriptor.
-
-    This is cross-platform and avoids extra dependencies. Raises TimeoutError on failure.
+    Required env vars (or Streamlit secrets):
+      - MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DB
     """
-    start = time.time()
-    while True:
+    if not _has_pymysql:
+        raise RuntimeError("pymysql no está instalado. Añádelo a requirements.txt y vuelve a desplegar.")
+
+    def _get_secret(name, default=None):
         try:
-            # os.O_CREAT | os.O_EXCL ensures creation fails if exists
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.write(fd, f"pid:{os.getpid()} time:{time.time()}".encode())
-            return fd
-        except FileExistsError:
-            if time.time() - start > timeout:
-                raise TimeoutError(f"Timeout acquiring DB lock {lock_path}")
-            time.sleep(0.1)
+            import streamlit as _st
+            if hasattr(_st, 'secrets') and name in _st.secrets:
+                return _st.secrets[name]
+        except Exception:
+            pass
+        return os.environ.get(name, default)
 
-def _release_lock(fd, lock_path):
-    try:
-        os.close(fd)
-    except Exception:
-        pass
-    try:
-        os.remove(lock_path)
-    except Exception:
-        pass
+    host = _get_secret('MYSQL_HOST')
+    port = int(_get_secret('MYSQL_PORT', 3306))
+    user = _get_secret('MYSQL_USER')
+    password = _get_secret('MYSQL_PASSWORD')
+    db = _get_secret('MYSQL_DB')
 
-def ensure_persistent_db(create_schema_callback=None):
-    """Ensure a persistent DB exists in `data/helpdesk.db` and avoid overwriting it.
+    missing = [k for k,v in [('MYSQL_HOST',host),('MYSQL_USER',user),('MYSQL_PASSWORD',password),('MYSQL_DB',db)] if not v]
+    if missing:
+        raise RuntimeError(f"Faltan variables de entorno para MySQL: {', '.join(missing)}")
 
-    Rules implemented:
-    - If `data/helpdesk.db` exists: keep it (do not overwrite from repo file).
-    - If it doesn't exist and repo `helpdesk.db` exists: move it atomically to `data/`.
-      If both exist but differ, keep the data copy and move the repo DB to a timestamped
-      backup under `data/` so nothing is lost.
-    - If none exist: create an empty DB file and (optionally) invoke
-      `create_schema_callback(conn)` to initialize tables.
-    """
-    os.makedirs(DB_DATA_DIR, exist_ok=True)
-
-    fd = None
-    try:
-        fd = _acquire_lock(DB_LOCK_PATH, timeout=15)
-
-        data_exists = os.path.exists(DB_DATA_PATH)
-        repo_exists = os.path.exists(DB_ORIG_PATH)
-
-        if data_exists:
-            # Persistent DB already present. If repo also exists and is different,
-            # move repo DB to backups so a subsequent redeploy won't overwrite the
-            # persistent one by accident.
-            if repo_exists:
-                try:
-                    repo_hash = _sha256_of_file(DB_ORIG_PATH)
-                    data_hash = _sha256_of_file(DB_DATA_PATH)
-                except Exception:
-                    repo_hash = None
-                    data_hash = None
-
-                if repo_hash and data_hash and repo_hash != data_hash:
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    backup_path = f"{DB_REPO_BACKUP_PREFIX}_{timestamp}.db"
-                    try:
-                        shutil.move(DB_ORIG_PATH, backup_path)
-                        logging.getLogger(__name__).info(f"Repo DB moved to backup: {backup_path}")
-                    except Exception as e:
-                        logging.getLogger(__name__).warning(f"Could not move repo DB to backup: {e}")
-                else:
-                    # Repo and data equal or hashes not available: remove repo copy to
-                    # avoid accidental confusion on next deploy cycle
-                    try:
-                        os.remove(DB_ORIG_PATH)
-                        logging.getLogger(__name__).info("Removed redundant repo DB file")
-                    except Exception:
-                        pass
-            return
-
-        # If we reach here, data DB does not exist
-        if repo_exists:
-            # Move repo DB into persistent location atomically
-            try:
-                shutil.move(DB_ORIG_PATH, DB_DATA_PATH)
-                logging.getLogger(__name__).info("Moved repo DB to persistent data folder")
-                return
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to move repo DB, will attempt copy: {e}")
-                try:
-                    shutil.copy2(DB_ORIG_PATH, DB_DATA_PATH)
-                    logging.getLogger(__name__).info("Copied repo DB to persistent data folder")
-                    try:
-                        os.remove(DB_ORIG_PATH)
-                    except Exception:
-                        pass
-                    return
-                except Exception as e2:
-                    logging.getLogger(__name__).error(f"Failed to copy repo DB: {e2}")
-
-        # If neither exists, create an empty DB and optionally run schema init
-        conn = sqlite3.connect(DB_DATA_PATH)
-        if create_schema_callback:
-            try:
-                create_schema_callback(conn)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Schema callback failed: {e}")
-        conn.close()
-        logging.getLogger(__name__).info("Created empty persistent DB file")
-
-    finally:
-        if fd is not None:
-            _release_lock(fd, DB_LOCK_PATH)
-
-def get_db_connection(*args, **kwargs):
-    """Return a sqlite3 connection pointing to the persistent DB path.
-
-    This function ensures the persistent DB exists before connecting.
-    """
-    ensure_persistent_db()
-    # Allow callers to override check_same_thread or timeout via kwargs
-    conn_kwargs = dict(kwargs)
-    # Use a reasonably long timeout for transient lock contention
-    if 'timeout' not in conn_kwargs:
-        conn_kwargs['timeout'] = 30
-    # Allow multi-threaded access from Streamlit app if needed
-    if 'check_same_thread' not in conn_kwargs:
-        conn_kwargs['check_same_thread'] = False
-
-    # If pymysql is available, try to connect to the remote MySQL and return a shim
-    if _has_pymysql:
-        try:
-            # Create a pymysql connection using provided credentials
-            pym_conn = pymysql.connect(
-                host=MYSQL_HOST,
-                port=int(MYSQL_PORT),
-                user=MYSQL_USER,
-                password=MYSQL_PASSWORD,
-                database=MYSQL_DB,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.Cursor,
-                autocommit=False,
-                connect_timeout=10
-            )
-            return _MySQLShimConnection(pym_conn)
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Could not connect to remote MySQL ({MYSQL_HOST}): {e}. Falling back to SQLite.")
-
-    # Fallback to the local SQLite persistent DB
-    return sqlite3.connect(DB_DATA_PATH, **conn_kwargs)
+    pym_conn = pymysql.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=db,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=False,
+        connect_timeout=10
+    )
+    return _MySQLShimConnection(pym_conn)
 
 
 def process_image_bytes(data_bytes, filename=None, max_dim=1600, jpeg_quality=85):
@@ -243,16 +120,13 @@ def process_image_bytes(data_bytes, filename=None, max_dim=1600, jpeg_quality=85
 # ticket history while avoiding storing excessively large files. Tune `max_dim` and
 # `jpeg_quality` as needed.
 
-# --- PARCHE: Interceptar llamadas a sqlite3.connect para usar la ruta persistente ---
-import sqlite3 as _sqlite3_global
-_original_sqlite3_connect = _sqlite3_global.connect
-# --- MySQL remote connection settings (configure below) ---
-# Credentials provided by the user
-MYSQL_HOST = '185.2.168.16'
-MYSQL_PORT = 3306
-MYSQL_USER = 'alufletes_admin'
-MYSQL_PASSWORD = '2fjy68PjsK7u2Hi'
-MYSQL_DB = 'alufletes_helpdesk'
+# --- Configuración MySQL a través de variables de entorno / secrets ---
+# Define nombres de variables de entorno esperadas (sin valores por defecto sensibles)
+MYSQL_HOST = os.environ.get('MYSQL_HOST')
+MYSQL_PORT = os.environ.get('MYSQL_PORT', 3306)
+MYSQL_USER = os.environ.get('MYSQL_USER')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD')
+MYSQL_DB = os.environ.get('MYSQL_DB')
 
 # Attempt to import pymysql. If not available, we'll fall back to SQLite.
 try:
@@ -294,6 +168,11 @@ class _MySQLShimCursor:
 
     def __iter__(self):
         return iter(self._cur)
+
+    # Expose DB-API cursor.description so libraries like pandas can introspect columns
+    @property
+    def description(self):
+        return getattr(self._cur, 'description', None)
 
     def close(self):
         try:
@@ -341,38 +220,37 @@ class _MySQLShimConnection:
         raise NotImplementedError('iterdump not supported for MySQL shim')
 
 
-def _patched_sqlite3_connect(*args, **kwargs):
-    """Intercept sqlite3.connect and remap requests for the repo DB to the persistent DB."""
-    # Detect database argument in positional or keyword form
-    db_arg = None
-    if len(args) > 0:
-        db_arg = args[0]
-    elif 'database' in kwargs:
-        db_arg = kwargs.get('database')
+# Eliminado soporte de SQLite: todas las conexiones usan MySQL
 
-    # If caller already passed the persistent path, call original to avoid recursion
+# --- SQLAlchemy Engine helper for pandas and generic SQL execution ---
+def is_mysql_connected() -> bool:
     try:
-        if isinstance(db_arg, str) and os.path.abspath(db_arg) == os.path.abspath(DB_DATA_PATH):
-            return _original_sqlite3_connect(*args, **kwargs)
+        _c = get_db_connection()
+        _is = isinstance(_c, _MySQLShimConnection)
+        try:
+            _c.close()
+        except Exception:
+            pass
+        return _is
     except Exception:
-        pass
+        return False
 
-    # If caller asked for the repository DB filename (e.g. 'helpdesk.db'), remap it
-    if isinstance(db_arg, str) and (os.path.basename(db_arg) == DB_FILENAME or db_arg == DB_FILENAME):
-        # Replace with persistent path and preserve other args/kwargs
-        new_args = list(args)
-        if len(new_args) > 0:
-            new_args[0] = DB_DATA_PATH
-            return get_db_connection(*new_args, **kwargs)
-        else:
-            kwargs['database'] = DB_DATA_PATH
-            return get_db_connection(**kwargs)
+def get_sqlalchemy_engine():
+    """Return a SQLAlchemy Engine targeting the active database (MySQL if available, otherwise SQLite)."""
+    try:
+        from sqlalchemy import create_engine
+    except Exception:
+        # Defer import errors to call sites if SQLAlchemy isn't installed
+        raise
 
-    # For any other DB, call original connect
-    return _original_sqlite3_connect(*args, **kwargs)
-
-# Apply the patch
-_sqlite3_global.connect = _patched_sqlite3_connect
+    if is_mysql_connected():
+        # mysql+pymysql URI
+        uri = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{int(MYSQL_PORT)}/{MYSQL_DB}?charset=utf8mb4"
+        return create_engine(uri, pool_pre_ping=True)
+    else:
+        # SQLite file engine
+        db_path = os.path.abspath(DB_DATA_PATH)
+        return create_engine(f"sqlite:///{db_path}")
 
 # funcion para calcular dias transucrridos desde la creacion del ticket en horario laboral
 def calcular_dias_transcurridos(fecha_creacion):
@@ -435,7 +313,7 @@ def obtener_tiempo_primera_respuesta():
         return None
 
     # Fallback (SQLite)
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
 SELECT 
@@ -504,7 +382,7 @@ def obtener_tiempo_promedio():
         return None
 
     # Fallback (SQLite)
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
 SELECT 
@@ -533,27 +411,16 @@ GROUP BY
 
 
 def agregar_comentario(ticket_id, usuario, comentario):
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
-        c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
-        conn.commit()
-        conn.close()
+    conn = get_db_connection()
+    c = conn.cursor()
+    fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
+    c.execute('INSERT INTO historial (ticket_id, fecha, usuario, comentario) VALUES (?, ?, ?, ?)', (ticket_id, fecha, usuario, comentario))
+    conn.commit()
+    conn.close()
 
 def on_dismiss():
-        if result and result.get("moved_deal"):
-            moved_id = result["moved_deal"]["deal_id"]
-            nuevo_estado = result["moved_deal"]["from_stage"]
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
-            conn.commit()
-            conn.close()
-            st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
-            # Recargar los tickets desde la base de datos para reflejar el cambio
-            rows = obtener_tickets_db()
-            st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
-            st.session_state.dialogo_cerrado = True
+    # Marcar el diálogo como cerrado; la lógica de movimiento de tickets se maneja en el flujo principal
+    st.session_state.dialogo_cerrado = True
 
 @st.dialog("📝 Comentario de cierre", width="small", dismissible=True, on_dismiss=on_dismiss)
 def mostrar_dialogo_comentario(ticket_id):
@@ -565,21 +432,12 @@ def mostrar_dialogo_comentario(ticket_id):
             st.warning("El comentario no puede estar vacío.")
             return
         agregar_comentario(ticket_id, usuario_actual, comentario)
-        conn = sqlite3.connect('helpdesk.db')
-        c = conn.cursor()
-        c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
-        conn.commit()
-        conn.close()
-        st.success(f"Ticket {moved_id} movido a estado '{nuevo_estado}'")
-        # Recargar los tickets desde la base de datos para reflejar el cambio
-        rows = obtener_tickets_db()
-        st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
+        st.success("Comentario guardado correctamente.")
+        st.session_state.dialogo_cerrado = True
         try:
-            send_email_gmail(
-                subject=f"Cambio de estado: {result['moved_deal']['deal_id']} → {nuevo_estado}",
-                body=f"Su ticket:\n\nID: {result['moved_deal']['deal_id']}\nUsuario: {username}\n\nha cambiado de estado a '{nuevo_estado}'",
-                to_email=email_moved)
-            logger.info(f"Email de notificación enviado para ticket {moved_id}")
+            st.rerun()
+        except Exception:
+            pass
             st.success(f"✅ Email enviado correctamente a {email_moved}")
         except Exception as e:
             st.warning(f"No se pudo enviar el email de notificación: {e}")
@@ -601,7 +459,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 def obtener_credenciales():
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT username, password, rol from usuarios')
     credenciales = c.fetchall()
@@ -609,7 +467,7 @@ def obtener_credenciales():
     return credenciales
 
 def obtener_usuarios_sistema():
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT id, username, password, rol from usuarios')
     credenciales = c.fetchall()
@@ -618,7 +476,7 @@ def obtener_usuarios_sistema():
 
 # funcion para tener correo de los usarios en base de datos
 def obtener_correos_usuarios(nombre_usuario):
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT email FROM usuarios WHERE nombre = ?', (nombre_usuario,))
     correos = c.fetchone()
@@ -660,7 +518,7 @@ st.title("🎫 Tickets de soporte")
 
 # Funciones para la base de datos
 def obtener_tickets_db():
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email FROM tickets ORDER BY id DESC')
     rows = c.fetchall()
@@ -668,7 +526,7 @@ def obtener_tickets_db():
     return rows
 
 def obtener_sedes_db():
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT nombre FROM sedes')
     rows = c.fetchall()
@@ -676,7 +534,7 @@ def obtener_sedes_db():
     return [row[0] for row in rows]
 
 def obtener_tipos_db():
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT descripcion FROM tipos_problema')
     rows = c.fetchall()
@@ -685,7 +543,7 @@ def obtener_tipos_db():
 
 def obtener_historial(ticket_id):
     """Obtiene el historial (fecha, usuario, comentario) de un ticket."""
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
     rows = c.fetchall()
@@ -693,7 +551,7 @@ def obtener_historial(ticket_id):
     return rows
 
 def obtener_cat_por_tipo(tipo):
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT categoria, categoria_2, categoria_3 FROM tipos_problema WHERE descripcion = ?', (tipo,))
     row = c.fetchone()
@@ -701,14 +559,11 @@ def obtener_cat_por_tipo(tipo):
     return row if row else (None, None, None)
 
 def agregar_ticket_db(issue, priority, usuario, sede, tipo, email):
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT id FROM tickets ORDER BY id DESC LIMIT 1')
-    last = c.fetchone()
-    if last:
-        last_num = int(last[0].split('-')[1])
-    else:
-        last_num = 1000
+    # Obtener el máximo sufijo numérico de los IDs tipo TICKET-XXXX
+    c.execute("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id, '-', -1) AS UNSIGNED)), 1000) FROM tickets")
+    last_num = c.fetchone()[0] or 1000
     new_id = f"TICKET-{last_num+1}"
     today = datetime.now().strftime("%d-%m-%Y")
     c.execute('INSERT INTO tickets (id, issue, status, priority, date_submitted, usuario, sede, tipo, asignado, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (new_id, issue, "Abierto", priority, today, usuario, sede, tipo, "", email))
@@ -717,7 +572,7 @@ def agregar_ticket_db(issue, priority, usuario, sede, tipo, email):
     return new_id, issue, "Abierto", priority, today, usuario, sede, tipo, "", email
 
 def actualizar_tickets_db(df):
-    conn = sqlite3.connect('helpdesk.db')
+    conn = get_db_connection()
     c = conn.cursor()
     for _, row in df.iterrows():
         # Solo actualiza el estado si ha cambiado
@@ -727,7 +582,7 @@ def actualizar_tickets_db(df):
 
 def actualizar_estado_ticket(ticket_id, nuevo_estado):
     try:
-        conn = sqlite3.connect('helpdesk.db')
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, ticket_id))
         conn.commit()
@@ -821,7 +676,7 @@ if rol == "Usuario":
                 # Opcional: limpiar el form después de enviar
                 st.session_state.tipo_seleccionado = "Seleccione"
                 st.markdown("Detalles:")
-                st.dataframe(df_new, use_container_width=True, hide_index=True)
+                st.dataframe(df_new, width='stretch', hide_index=True)
                 # Guardar archivo adjunto en base de datos si existe
                 if archivo_usuario is not None:
                     import mimetypes
@@ -840,10 +695,9 @@ if rol == "Usuario":
                             tipo_mime = processed_mime
 
                     # Guardar en base de datos
-                    conn = sqlite3.connect('helpdesk.db')
+                    conn = get_db_connection()
                     c = conn.cursor()
-                    c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)',
-                            (new_ticket[0], nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
+                    c.execute('INSERT INTO adjuntos (ticket_id, nombre_archivo, tipo_mime, contenido, fecha, usuario) VALUES (?, ?, ?, ?, ?, ?)', (new_ticket[0], nombre_archivo, tipo_mime, contenido, fecha, usuario_adj))
                     conn.commit()
                     conn.close()
                     # Registrar en historial
@@ -1318,7 +1172,7 @@ elif rol == "Soporte":
         except Exception as e:
             st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
             # Fallback to plain dataframe and existing downloads
-            st.dataframe(df_filtrado[cols_sel].reset_index(drop=True), use_container_width=True)
+            st.dataframe(df_filtrado[cols_sel].reset_index(drop=True), width='stretch')
             try:
                 csv = df_filtrado[cols_sel].to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV (filtrados)", data=csv, file_name="tickets_filtrados.csv", mime='text/csv')
@@ -1362,7 +1216,7 @@ elif rol == "Soporte":
         else:
             st.session_state.dialogo_cerrado = False
         if nuevo_estado != "Cerrado" or (nuevo_estado == "Cerrado" and st.session_state.dialogo_cerrado):
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
             conn.commit()
@@ -1373,7 +1227,7 @@ elif rol == "Soporte":
             st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             try:
                 # Obtener info del ticket
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('SELECT issue, priority, email FROM tickets WHERE id = ?', (moved_id,))
                 trow = c.fetchone()
@@ -1388,7 +1242,7 @@ elif rol == "Soporte":
                 # Si se cierra, adjuntar el último comentario de cierre si existe
                 if nuevo_estado.lower() == 'cerrado':
                     try:
-                        conn = sqlite3.connect('helpdesk.db')
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute('SELECT comentario, usuario, fecha FROM historial WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', (moved_id,))
                         last = c.fetchone()
@@ -1435,7 +1289,7 @@ elif rol == "Soporte":
             st.write("🎯 Proposito", result["clicked_deal"]["type"])
             st.write()
     def obtener_historial(ticket_id):
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
             rows = c.fetchall()
@@ -1462,7 +1316,7 @@ elif rol == "Soporte":
                             continue
                         adjuntos_mostrados.add(nombre_archivo)
                         # Recuperar adjunto de la base de datos
-                        conn = sqlite3.connect('helpdesk.db')
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (result['clicked_deal']['deal_id'], nombre_archivo))
                         adj = c.fetchone()
@@ -1569,7 +1423,7 @@ elif rol == "Soporte":
             # Notificar al creador del ticket y al admin si el comentario lo realizó soporte
             try:
                 ticket_id = result['clicked_deal']['deal_id']
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('SELECT email, status, issue FROM tickets WHERE id = ?', (ticket_id,))
                 ticket_row = c.fetchone()
@@ -1591,7 +1445,7 @@ elif rol == "Soporte":
                 # el comentarista no es admin (simple heurística: buscar el rol en la tabla usuarios)
                 try:
                     # comprobar rol del usuario que comentó
-                    conn = sqlite3.connect('helpdesk.db')
+                    conn = get_db_connection()
                     c = conn.cursor()
                     c.execute('SELECT rol FROM usuarios WHERE username = ? OR nombre = ?', (usuario_hist, usuario_hist))
                     rol_row = c.fetchone()
@@ -1625,7 +1479,7 @@ elif rol == "Soporte":
             fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
             usuario_adj = usuario_actual
             # Guardar en base de datos SOLO si NO EXISTE
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ?', (result['clicked_deal']['deal_id'], nombre_archivo))
             exists = c.fetchone()[0]
@@ -1704,7 +1558,7 @@ elif rol == "Soporte":
     if not tipo_counts.empty:
         fig_tipo = px.pie(values=tipo_counts.values, names=tipo_counts.index, 
                         title="Distribución por Tipo")
-        st.plotly_chart(fig_tipo, use_container_width=True)
+    st.plotly_chart(fig_tipo, width='stretch')
 
 
 
@@ -1960,7 +1814,7 @@ elif rol == "Admin":
                     st.download_button("📥 Descargar XLSX (Admin - fallback)", data=towrite_a, file_name="tickets_admin.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         except Exception as e:
             st.warning(f"st_aggrid no disponible o error al renderizar AgGrid: {e}")
-            st.dataframe(df[cols_sel_a].reset_index(drop=True), use_container_width=True)
+            st.dataframe(df[cols_sel_a].reset_index(drop=True), width='stretch')
             try:
                 csv_admin = df[cols_sel_a].to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV (filtrados - Admin)", data=csv_admin, file_name="tickets_filtrados_admin.csv", mime='text/csv')
@@ -1985,12 +1839,12 @@ elif rol == "Admin":
     if 'dialogo_cerrado' not in st.session_state:
         st.session_state.dialogo_cerrado = False
     def obtener_historial(ticket_id):
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
-            rows = c.fetchall()
-            conn.close()
-            return rows
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('SELECT fecha, usuario, comentario FROM historial WHERE ticket_id = ? ORDER BY id ASC', (ticket_id,))
+        rows = c.fetchall()
+        conn.close()
+        return rows
 
     if result and result.get("moved_deal"):
         moved_id = result["moved_deal"]["deal_id"]
@@ -2008,7 +1862,7 @@ elif rol == "Admin":
         else:
             st.session_state.dialogo_cerrado = False
         if nuevo_estado != "Cerrado" or (nuevo_estado == "Cerrado" and st.session_state.dialogo_cerrado):
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('UPDATE tickets SET status=? WHERE id=?', (nuevo_estado, moved_id))
             conn.commit()
@@ -2019,7 +1873,7 @@ elif rol == "Admin":
             st.session_state.df = pd.DataFrame(rows, columns=["ID", "Issue", "Status", "Priority", "Date Submitted", "usuario", "sede", "tipo", "asignado", "email"])
             try:
                 # Obtener info del ticket
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('SELECT issue, priority, email FROM tickets WHERE id = ?', (moved_id,))
                 trow = c.fetchone()
@@ -2033,7 +1887,7 @@ elif rol == "Admin":
 
                 if nuevo_estado.lower() == 'cerrado':
                     try:
-                        conn = sqlite3.connect('helpdesk.db')
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute('SELECT comentario, usuario, fecha FROM historial WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', (moved_id,))
                         last = c.fetchone()
@@ -2071,13 +1925,13 @@ elif rol == "Admin":
             st.info(f"🆔 Ticket seleccionado: {result['clicked_deal']['id']}")
         with cols[1]:
             # --------- Selección y asignación de usuario ---------
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('SELECT nombre FROM usuarios')
             usuarios = [u[0] for u in c.fetchall()]
             conn.close()
             ticket_id = result["clicked_deal"]["id"]
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT asignado FROM tickets WHERE id = ?", (ticket_id,))
             asignado_actual = c.fetchone()
@@ -2087,7 +1941,7 @@ elif rol == "Admin":
                 "Asignar usuario", options=[""]+usuarios, index=(usuarios.index(asignado_actual) + 1) if asignado_actual in usuarios else 0, key=f"asignar_{ticket_id}", placeholder=asignado_actual)
             if nuevo_usuario != asignado_actual:
                 email_usuario = obtener_correos_usuarios(nuevo_usuario)
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("UPDATE tickets SET asignado = ? WHERE id = ?", (nuevo_usuario, ticket_id))
                 conn.commit()
@@ -2110,7 +1964,7 @@ elif rol == "Admin":
                 st.rerun()
         with cols[2]:
             # --------- Selección y cambio de prioridad ---------
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT priority FROM tickets WHERE id = ?", (ticket_id,))
             prioridad_actual = c.fetchone()[0]
@@ -2123,7 +1977,7 @@ elif rol == "Admin":
                 key=f"cambiar_prioridad_{ticket_id}"
             )
             if nueva_prioridad != prioridad_actual:
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("UPDATE tickets SET priority = ? WHERE id = ?", (nueva_prioridad, ticket_id))
                 conn.commit()
@@ -2145,7 +1999,7 @@ elif rol == "Admin":
             st.write("🎯 Proposito", result["clicked_deal"]["type"])
             # -- Botón archivar para tickets cerrados (solo admin) --
             ticket_id = result["clicked_deal"]["id"]
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT status, tipo FROM tickets WHERE id = ?", (ticket_id,))
             row = c.fetchone()
@@ -2159,7 +2013,7 @@ elif rol == "Admin":
                 proposito_actual = tipo_ticket
 
             #-- cambiar tipo del ticket segun base de datos--#
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT * FROM tipos_problema")
             Propositos = c.fetchall()
@@ -2183,7 +2037,7 @@ elif rol == "Admin":
             # Solo procesar si el usuario realmente cambió la selección
             if nuevo_proposito != "Seleccione":
                 # Buscar las categorías del tipo seleccionado
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT categoria, categoria_2, categoria_3 FROM tipos_problema WHERE descripcion = ?", (nuevo_proposito,))
                 categorias_raw = c.fetchone()
@@ -2204,7 +2058,7 @@ elif rol == "Admin":
 
                     if categoria_seleccionada in categorias and categoria_seleccionada != "Seleccione":
                         tipo_completo = f"{nuevo_proposito} - {categoria_seleccionada}"
-                        conn = sqlite3.connect('helpdesk.db')
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute("UPDATE tickets SET tipo = ? WHERE id = ?", (tipo_completo, ticket_id))
                         conn.commit()
@@ -2218,7 +2072,7 @@ elif rol == "Admin":
                         
                 else:
                     # Si no hay categorías, solo actualizar el propósito
-                    conn = sqlite3.connect('helpdesk.db')
+                    conn = get_db_connection()
                     c = conn.cursor()
                     c.execute("UPDATE tickets SET tipo = ? WHERE id = ?", (nuevo_proposito, ticket_id))
                     conn.commit()
@@ -2233,7 +2087,7 @@ elif rol == "Admin":
 
             if status_ticket == "Cerrado" and tipo_ticket != "archivado":
                 if st.button("Archivar este ticket", key=f"archivar_{ticket_id}"):
-                    conn = sqlite3.connect('helpdesk.db')
+                    conn = get_db_connection()
                     c = conn.cursor()
                     c.execute("UPDATE tickets SET tipo = 'archivado' WHERE id = ?", (ticket_id,))
                     conn.commit()
@@ -2266,7 +2120,7 @@ elif rol == "Admin":
                             continue
                         adjuntos_mostrados.add(nombre_archivo)
                         # Recuperar adjunto de la base de datos
-                        conn = sqlite3.connect('helpdesk.db')
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute('SELECT tipo_mime, contenido FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ? ORDER BY id DESC LIMIT 1', (result['clicked_deal']['deal_id'], nombre_archivo))
                         adj = c.fetchone()
@@ -2346,7 +2200,7 @@ elif rol == "Admin":
             # Notificar al creador del ticket y al admin si el comentario lo realizó soporte
             try:
                 ticket_id = result['clicked_deal']['deal_id']
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('SELECT email, status, issue FROM tickets WHERE id = ?', (ticket_id,))
                 ticket_row = c.fetchone()
@@ -2364,7 +2218,7 @@ elif rol == "Admin":
 
                 # Comprobar rol del comentarista y si es soporte, notificar al admin
                 try:
-                    conn = sqlite3.connect('helpdesk.db')
+                    conn = get_db_connection()
                     c = conn.cursor()
                     c.execute('SELECT rol FROM usuarios WHERE username = ? OR nombre = ?', (usuario_hist, usuario_hist))
                     rol_row = c.fetchone()
@@ -2397,7 +2251,7 @@ elif rol == "Admin":
             fecha = datetime.now().strftime("%d-%m-%Y %H:%M")
             usuario_adj = "Admin"
             # Guardar en base de datos SOLO si NO EXISTE
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) FROM adjuntos WHERE ticket_id = ? AND nombre_archivo = ?', (result['clicked_deal']['deal_id'], nombre_archivo))
             exists = c.fetchone()[0]
@@ -2443,7 +2297,7 @@ elif rol == "Admin":
     if not tipo_counts.empty:
         fig_tipo = px.pie(values=tipo_counts.values, names=tipo_counts.index, 
                         title="Distribución por Tipo")
-        st.plotly_chart(fig_tipo, use_container_width=True)
+    st.plotly_chart(fig_tipo, width='stretch')
 elif rol == "Config":
     #----icono de engranaje en el sidebar----#
     # st.sidebar.button("⚙️", key="config_avanzada")
@@ -2455,7 +2309,7 @@ elif rol == "Config":
         st.header("Propositos")
 
         # Obtener datos de la base de datos
-        conn = sqlite3.connect('helpdesk.db')
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute('SELECT * FROM tipos_problema')
         tipos = c.fetchall()
@@ -2470,7 +2324,7 @@ elif rol == "Config":
         #-----borrar fila en base de datos si se borra en el editor-----#
         filas_borradas = set(df_tipos['id']) - set(df_editado['id'])
         if filas_borradas:
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             for fila_id in filas_borradas:
                 c.execute('DELETE FROM tipos_problema WHERE id = ?', (fila_id,))
@@ -2481,7 +2335,7 @@ elif rol == "Config":
             st.rerun()
         # Botón para guardar cambios
         if st.button("💾 Guardar cambios en la base de datos"):
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             for _, row in df_editado.iterrows():
                 c.execute("""
@@ -2501,7 +2355,7 @@ elif rol == "Config":
                 descripcion_tipo3 = st.text_input("Categoria 3")
                 submit = st.form_submit_button("Agregar proposito")
             if submit and nuevo_tipo and descripcion_tipo and nuevo_tipo.strip():
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('INSERT INTO tipos_problema (descripcion, categoria, categoria_2, categoria_3) VALUES (?, ?, ?, ?)', (nuevo_tipo.strip(), descripcion_tipo.strip(), descripcion_tipo2.strip(), descripcion_tipo3.strip()))
                 conn.commit()
@@ -2518,7 +2372,7 @@ elif rol == "Config":
         #-----borrar fila en base de datos si se borra en el editor-----#
         filas_borradas_usuarios = set(df_usuarios['id']) - set(df_usuarios_edit['id'])
         if filas_borradas_usuarios:
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             for fila_usuario in filas_borradas_usuarios:
                 c.execute('DELETE FROM usuarios WHERE id = ?', (fila_usuario,))
@@ -2529,7 +2383,7 @@ elif rol == "Config":
             st.rerun()
         # guardar cambios en la base de datos
         if st.button("💾 Guardar cambios en usuarios"):
-            conn = sqlite3.connect('helpdesk.db')
+            conn = get_db_connection()
             c = conn.cursor()
             for _, row in df_usuarios_edit.iterrows():
                 c.execute("""
@@ -2549,7 +2403,7 @@ elif rol == "Config":
                 rol_usuario = st.selectbox("Rol", options=["soporte", "admin"])
                 submit_usuario = st.form_submit_button("Agregar usuario")
             if submit_usuario and nuevo_usuario and nueva_contraseña and nuevo_usuario.strip() and nueva_contraseña.strip():
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('INSERT INTO usuarios (username, password, rol, nombre) VALUES (?, ?, ?, ?)', (nuevo_usuario.strip(), nueva_contraseña.strip(), rol_usuario, ""))
                 conn.commit()
@@ -2568,7 +2422,7 @@ elif rol == "Config":
                 nueva_sede = st.text_input("Nueva sede")
                 submit_sede = st.form_submit_button("Agregar sede")
             if submit_sede and nueva_sede and nueva_sede.strip():
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('INSERT INTO sedes (nombre) VALUES (?)', (nueva_sede))
                 conn.commit()
@@ -2580,157 +2434,91 @@ elif rol == "Config":
                 st.warning("Debe llenar el campo")
         st.markdown("---")
         with st.expander("Base de datos y consultas SQL", icon='🖥️'):
-            st.subheader("Base de datos interna (SQLite)")
-            conn = sqlite3.connect('helpdesk.db')
-            c = conn.cursor()
-            c.execute('SELECT name FROM sqlite_master WHERE type="table"')
-            tables = c.fetchall()
-            st.write("Tablas en la base de datos:")
-            for table in tables:
-                st.write(f"- {table[0]}")
-            conn.close()
+            st.subheader("Base de datos")
+            try:
+                # MySQL: listar tablas del esquema actual
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY TABLE_NAME;")
+                tables = [r[0] for r in cur.fetchall()]
+                try:
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass
+                st.write("Tablas en la base de datos:")
+                for t in tables:
+                    st.write(f"- {t}")
+            except Exception as e:
+                st.warning(f"No se pudieron listar las tablas: {e}")
             # ejecutar sql
             sql = st.text_area("Consulta SQL", height=100)
             if st.button("Ejecutar"):
                 try:
-                    conn = sqlite3.connect('helpdesk.db')
-                    cursor = conn.cursor()
-            
                     sql_upper = sql.strip().upper()
-            
+
                     if sql_upper.startswith('SELECT'):
-                        # Para consultas SELECT que devuelven resultados
-                        df = pd.read_sql_query(sql, conn)
+                        # Ejecutar SELECTs usando SQLAlchemy engine para compatibilidad con MySQL/SQLite
+                        from sqlalchemy.exc import SQLAlchemyError
+                        try:
+                            engine = get_sqlalchemy_engine()
+                            df = pd.read_sql(sql, engine)
+                        except SQLAlchemyError as se:
+                            # Fallback: ejecutar con cursor y construir DataFrame
+                            conn = get_db_connection()
+                            cur = conn.cursor()
+                            cur.execute(sql)
+                            rows = cur.fetchall()
+                            cols = [d[0] for d in (cur.description or [])]
+                            df = pd.DataFrame(rows, columns=cols or None)
+                            try:
+                                cur.close(); conn.close()
+                            except Exception:
+                                pass
                         st.write("Resultados:")
-                        st.dataframe(df)
+                        st.dataframe(df, width='stretch')
                         st.write(f"Filas encontradas: {len(df)}")
                     else:
                         # Para múltiples sentencias SQL (INSERT, UPDATE, DELETE, CREATE, etc.)
-                        cursor.executescript(sql)
-                        conn.commit()
-                        filas_afectadas = cursor.rowcount
-                        st.success(f"Consulta(s) ejecutada(s) exitosamente. Filas afectadas: {filas_afectadas}")
-            
-                    conn.close()
-            
+                        conn = get_db_connection()
+                        try:
+                            # Usar executescript si está disponible (SQLite y shim)
+                            if hasattr(conn, 'executescript'):
+                                conn.executescript(sql)
+                            else:
+                                # Split basic statements by ';' and run
+                                cur = conn.cursor()
+                                for stmt in [s.strip() for s in sql.split(';') if s.strip()]:
+                                    cur.execute(stmt)
+                                try:
+                                    cur.close()
+                                except Exception:
+                                    pass
+                            conn.commit()
+                        finally:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                        st.success(f"Consulta(s) ejecutada(s) exitosamente.")
                 except Exception as e:
                     st.error(f"Error al ejecutar la consulta: {e}")
 
-        # Descargar archivo db
-        if st.button("Descargar base de datos"):
-            with open("helpdesk_backup.db", "rb") as f:
-                st.download_button("Descargar", f, file_name="helpdesk_backup.db")
-        # exportar db a sql con create table if not exist y boton de descarga
-        def _convert_sqlite_dump_to_mysql(sql_text: str) -> str:
-            """Attempt a conservative conversion from an sqlite3 .dump to MySQL-compatible SQL.
-
-            This performs textual transforms only; complex datatype/constraint differences
-            are handled with reasonable defaults (INTEGER->INT, TEXT->TEXT, REAL->DOUBLE,
-            BLOB->LONGBLOB, AUTOINCREMENT->AUTO_INCREMENT) and table options are appended.
-            The function is intentionally conservative to avoid breaking data; review output
-            before applying to a production MySQL instance.
-            """
-            import re
-
-            out_lines = []
-            buf = ''
-            in_create = False
-            for line in sql_text.splitlines():
-                # Skip SQLite-specific transaction pragmas
-                if line.strip().upper() == 'BEGIN TRANSACTION;':
-                    out_lines.append('SET FOREIGN_KEY_CHECKS = 0;')
-                    out_lines.append('START TRANSACTION;')
-                    continue
-                if line.strip().upper() == 'COMMIT;':
-                    out_lines.append('COMMIT;')
-                    out_lines.append('SET FOREIGN_KEY_CHECKS = 1;')
-                    continue
-
-                # Convert double-quoted identifiers to backticks (conservative)
-                # Avoid touching single-quoted string literals.
-                # This simple replace is OK because sqlite .dump uses double quotes for identifiers.
-                processed = line.replace('"', '`')
-
-                # Collect CREATE TABLE block to post-process types and append ENGINE
-                if processed.strip().upper().startswith('CREATE TABLE') and processed.strip().endswith('('):
-                    in_create = True
-                    buf = processed
-                    continue
-
-                if in_create:
-                    buf += '\n' + processed
-                    if processed.strip().endswith(');') or processed.strip().endswith(')'):
-                        # finished CREATE TABLE
-                        # Normalize types inside parentheses
-                        # Replace common types
-                        buf = re.sub(r'\bAUTOINCREMENT\b', 'AUTO_INCREMENT', buf, flags=re.IGNORECASE)
-                        buf = re.sub(r'\bINTEGER\b', 'INT', buf, flags=re.IGNORECASE)
-                        buf = re.sub(r'\bREAL\b', 'DOUBLE', buf, flags=re.IGNORECASE)
-                        buf = re.sub(r'\bBLOB\b', 'LONGBLOB', buf, flags=re.IGNORECASE)
-                        buf = re.sub(r'\bBOOLEAN\b', 'TINYINT(1)', buf, flags=re.IGNORECASE)
-                        # Ensure PRIMARY KEY AUTO_INCREMENT syntax when applicable
-                        buf = re.sub(r'`(\w+)`\s+INT\s+PRIMARY\s+KEY\s+AUTO_INCREMENT', r'`\1` INT PRIMARY KEY AUTO_INCREMENT', buf, flags=re.IGNORECASE)
-                        # Remove SQLite-specific WITHOUT ROWID if present
-                        buf = re.sub(r'WITHOUT ROWID', '', buf, flags=re.IGNORECASE)
-                        # Close with ENGINE and charset
-                        if buf.strip().endswith(');'):
-                            buf = buf.rstrip().rstrip(';') + ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;'
-                        out_lines.append(buf)
-                        buf = ''
-                        in_create = False
-                    continue
-
-                # Convert INSERT statements: change "table" to `table`
-                if processed.strip().upper().startswith('INSERT INTO'):
-                    # sqlite dumps sometimes use X'ABCD' for blobs; leave as-is
-                    out_lines.append(processed)
-                    continue
-
-                # Default: passthrough
-                out_lines.append(processed)
-
-            return '\n'.join(out_lines)
-
-        col_e1, col_e2 = st.columns([1,1])
-        with col_e1:
-            if st.button("Exportar base de datos a SQL (SQLite dump)"):
-                conn = sqlite3.connect('helpdesk.db')
-                with open("helpdesk_backup.sql", "w", encoding='utf-8') as f:
-                    for line in conn.iterdump():
-                        f.write(f"{line}\n")
-                conn.close()
-                st.success("Base de datos exportada como 'helpdesk_backup.sql'")
-                with open("helpdesk_backup.sql", "r", encoding='utf-8') as f:
-                    st.download_button("Descargar (SQLite)", f, file_name="helpdesk_backup.sql")
-
-        with col_e2:
-            if st.button("Exportar base de datos a SQL (MySQL)"):
-                conn = sqlite3.connect('helpdesk.db')
-                # Build sqlite dump in memory first
-                dump_lines = '\n'.join(conn.iterdump())
-                conn.close()
-                try:
-                    mysql_sql = _convert_sqlite_dump_to_mysql(dump_lines)
-                    with open("helpdesk_backup_mysql.sql", "w", encoding='utf-8') as f:
-                        f.write(mysql_sql)
-                    st.success("Base de datos exportada como 'helpdesk_backup_mysql.sql' (convertida para MySQL — revisar antes de aplicar)")
-                    with open("helpdesk_backup_mysql.sql", "r", encoding='utf-8') as f:
-                        st.download_button("Descargar (MySQL)", f, file_name="helpdesk_backup_mysql.sql")
-                except Exception as e:
-                    st.error(f"Error al convertir dump a MySQL: {e}")
+        # Respaldos: para MySQL use su herramienta de hosting o mysqldump
+        st.info("Para respaldos/restauración en MySQL, utilice herramientas del servidor (p. ej., mysqldump) o su proveedor. Esta app no exporta el archivo .db de SQLite.")
         # importar archivo sql a bd
         sql_import = st.file_uploader("Subir archivo SQL", type="sql")
         if st.button("Importar base de datos desde SQL"):
             if sql_import is not None:
-                conn = sqlite3.connect('helpdesk.db')
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 # Leer el SQL y modificarlo antes de ejecutarlo
                 sql_text = sql_import.read().decode("utf-8")
                 import re
                 # Cambiar CREATE TABLE por CREATE TABLE IF NOT EXISTS
                 sql_text = re.sub(r"CREATE TABLE(?! IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS", sql_text)
-                # Cambiar INSERT por INSERT OR IGNORE (para evitar duplicados)
-                sql_text = re.sub(r"INSERT INTO", "INSERT OR IGNORE INTO", sql_text)
+                # Cambiar INSERT por INSERT IGNORE (para evitar duplicados en MySQL)
+                sql_text = re.sub(r"INSERT\s+INTO", "INSERT IGNORE INTO", sql_text, flags=re.IGNORECASE)
                 cursor.executescript(sql_text)
                 conn.commit()
                 conn.close()
@@ -2739,7 +2527,11 @@ elif rol == "Config":
                 st.error("Por favor, sube un archivo SQL.")
 #------------------------------------------------------------Reporteria-----------------------------------------------#
 if rol == 'Soporte' or rol == 'Admin':
-    conn = sqlite3.connect('helpdesk.db')
+    # Usar SQLAlchemy engine para lecturas con pandas (compatible MySQL/SQLite)
+    try:
+        engine = get_sqlalchemy_engine()
+    except Exception:
+        engine = None
 
     # Modificar la consulta principal para identificar qué categoría se usó
     # Use SQL compatible con SQLite por defecto; si estamos conectados a MySQL, usar CONCAT()
@@ -2793,9 +2585,24 @@ if rol == 'Soporte' or rol == 'Admin':
         )
         """
     query2 = "SELECT * FROM tipos_problema"
-    df_tickets_tipos = pd.read_sql_query(query, conn)
-    df_tipos = pd.read_sql_query(query2, conn)
-    conn.close()
+    if engine is not None:
+        df_tickets_tipos = pd.read_sql(query, engine)
+        df_tipos = pd.read_sql(query2, engine)
+    else:
+        _conn = get_db_connection()
+        _cur = _conn.cursor()
+        _cur.execute(query)
+        _rows1 = _cur.fetchall()
+        _cols1 = [d[0] for d in (_cur.description or [])]
+        df_tickets_tipos = pd.DataFrame(_rows1, columns=_cols1 or None)
+        _cur.execute(query2)
+        _rows2 = _cur.fetchall()
+        _cols2 = [d[0] for d in (_cur.description or [])]
+        df_tipos = pd.DataFrame(_rows2, columns=_cols2 or None)
+        try:
+            _cur.close(); _conn.close()
+        except Exception:
+            pass
 
     st.markdown("---")
     st.header("Tickets por propósito")

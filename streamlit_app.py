@@ -248,11 +248,11 @@ import sqlite3 as _sqlite3_global
 _original_sqlite3_connect = _sqlite3_global.connect
 # --- MySQL remote connection settings (configure below) ---
 # Credentials provided by the user
-MYSQL_HOST = 'sql204.infinityfree.com'
+MYSQL_HOST = '185.2.168.16'
 MYSQL_PORT = 3306
-MYSQL_USER = 'if0_40232134'
-MYSQL_PASSWORD = 'Aluminiologo1'
-MYSQL_DB = 'if0_40232134_helpdesk'
+MYSQL_USER = 'alufletes_admin'
+MYSQL_PASSWORD = '2fjy68PjsK7u2Hi'
+MYSQL_DB = 'alufletes_helpdesk'
 
 # Attempt to import pymysql. If not available, we'll fall back to SQLite.
 try:

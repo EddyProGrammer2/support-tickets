@@ -2673,6 +2673,6 @@ if rol == 'Soporte' or rol == 'Admin':
         st.info("Selecciona un propósito para ver las categorías disponibles.")
 #------------------------------------------------------------Admin----------------------------------------------------------------------------------#
 st.markdown("---")
-st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. @""" + str(datetime.now().year) + """ V3.0.0.</p>
+st.write(""" <div style="position: static; left: 0; bottom: 0; width: 100%; background-color: rgba(255, 255, 255, 0); color: #495057; text-align: center; padding: 25px; font-size: 0.9em;">   <p>Desarrollado por Eddy Coello. @""" + str(datetime.now().year) + """ V3.5.0.</p>
      </div>
  """, unsafe_allow_html=True)

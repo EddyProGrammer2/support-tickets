@@ -1189,6 +1189,7 @@ elif rol == "Soporte":
     result = kanban_board(
         stages=stages,
         deals=deals,
+        height = 1000,
         user_info=user_info,
         permission_matrix=permission_matrix,
         show_tooltips=True,

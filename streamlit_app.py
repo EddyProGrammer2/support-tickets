@@ -1832,6 +1832,7 @@ elif rol == "Admin":
     result = kanban_board(
         stages=stages,
         deals=deals,
+        height = 1000,
         user_info=user_info,
         key="kanban_tickets"
     )
